@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        run: cargo install cross
+
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then
+            arch=x86_64
+          else
+            arch=aarch64
+          fi
+          cp target/${{ matrix.target }}/release/tokengauge-waybar dist/
+          cp target/${{ matrix.target }}/release/tokengauge-tui dist/
+          tar -czf dist/tokengauge-${GITHUB_REF_NAME}-linux-${arch}.tar.gz -C dist tokengauge-waybar tokengauge-tui
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tokengauge-${{ matrix.target }}
+          path: dist/tokengauge-${GITHUB_REF_NAME}-linux-*.tar.gz
+
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Copy installer and updater scripts
+        run: |
+          cp scripts/install.sh dist/install.sh
+          cp scripts/update.sh dist/update.sh
+          cp scripts/update-codexbar.sh dist/update-codexbar.sh
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/install.sh
+            dist/update.sh
+            dist/update-codexbar.sh

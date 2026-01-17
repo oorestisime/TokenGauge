@@ -1,0 +1,12 @@
+# TokenGauge configuration
+# Copy to ~/.config/tokengauge/config.toml
+
+codexbar_bin = "codexbar"
+source = "oauth"
+refresh_secs = 600
+cache_file = "/tmp/tokengauge-usage.json"
+
+[providers]
+codex = true
+claude = true
+

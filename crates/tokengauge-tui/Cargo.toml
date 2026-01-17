@@ -1,0 +1,12 @@
+[package]
+name = "tokengauge-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokengauge-core = { path = "../tokengauge-core" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+ratatui = { version = "0.29", features = ["crossterm"] }
+serde = { workspace = true }
+crossterm = "0.28"

@@ -1,0 +1,6 @@
+"custom/tokengauge": {
+  "exec": "tokengauge-waybar",
+  "return-type": "json",
+  "interval": 60,
+  "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+}
