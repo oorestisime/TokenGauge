@@ -15,20 +15,10 @@ get_latest_tag() {
   local api_json
   api_json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")
 
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY' <<<"$api_json"
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    print(data.get("tag_name", ""))
-except Exception:
-    print("")
-PY
-  elif command -v jq >/dev/null 2>&1; then
+  if command -v jq >/dev/null 2>&1; then
     printf '%s' "$api_json" | jq -r '.tag_name // empty'
   else
-    echo "Missing python3 or jq for JSON parsing" >&2
+    echo "Missing jq for JSON parsing" >&2
     return 1
   fi
 }

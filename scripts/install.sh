@@ -6,6 +6,7 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/tokengauge"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 WAYBAR_CONFIG="$HOME/.config/waybar/config.jsonc"
+BACKUP_PATH=""
 TMP_DIR=$(mktemp -d)
 
 cleanup() {
@@ -20,20 +21,10 @@ get_latest_tag() {
   local api_json
   api_json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")
 
-  if command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY' <<<"$api_json"
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    print(data.get("tag_name", ""))
-except Exception:
-    print("")
-PY
-  elif command -v jq >/dev/null 2>&1; then
+  if command -v jq >/dev/null 2>&1; then
     printf '%s' "$api_json" | jq -r '.tag_name // empty'
   else
-    echo "Missing python3 or jq for JSON parsing" >&2
+    echo "Missing jq for JSON parsing" >&2
     return 1
   fi
 }
@@ -113,19 +104,24 @@ fi
 
 if [[ -f "$WAYBAR_CONFIG" ]]; then
   backup="$WAYBAR_CONFIG.bak.tokengauge.$(date +%s)"
+  BACKUP_PATH="$backup"
   cp "$WAYBAR_CONFIG" "$backup"
   if ! grep -q 'custom/tokengauge' "$WAYBAR_CONFIG"; then
     sed -i 's/"group\/tray-expander"/"custom\/tokengauge", "group\/tray-expander"/' "$WAYBAR_CONFIG"
     cat <<'JSON' >> "$WAYBAR_CONFIG"
 
-  ,"custom/tokengauge": {
-    "exec": "tokengauge-waybar",
-    "return-type": "json",
-    "interval": 60,
-    "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
-  }
+"custom/tokengauge": {
+  "exec": "tokengauge-waybar",
+  "return-type": "json",
+  "interval": 60,
+  "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+},
 JSON
   fi
 fi
 
 echo "Installed tokengauge to $INSTALL_DIR. Restart Waybar: omarchy-restart-waybar"
+if [[ -n "$BACKUP_PATH" ]]; then
+  echo "Waybar backup saved at: $BACKUP_PATH"
+  echo "Restore with: cp '$BACKUP_PATH' '$WAYBAR_CONFIG'"
+fi

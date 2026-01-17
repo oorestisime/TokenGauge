@@ -70,7 +70,7 @@ fn main() -> Result<()> {
             format!("{} {used}", row.provider)
         })
         .collect::<Vec<_>>()
-        .join("  ");
+        .join("   ");
 
     let tooltip = rows
         .iter()
