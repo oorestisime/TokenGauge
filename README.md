@@ -2,12 +2,16 @@
 
 TokenGauge keeps Codex and Claude usage visible on Linux. It pairs a Waybar module with a fast TUI dashboard, backed by CodexBar CLI and a local cache.
 
+![TUI dashboard](tui.png)
+
 ## Highlights
 
 - Compact Waybar status with cached usage
 - TUI dashboard with colored bars and reset times
 - OAuth source for Codex and Claude on Linux
 - Configurable refresh cadence to avoid extra API calls
+
+![Waybar status](waybar.png)
 
 ## Quick install
 
@@ -72,6 +76,7 @@ cp crates/tokengauge-core/config.example.toml ~/.config/tokengauge/config.toml
 ```
 
 Key fields:
+
 - `codexbar_bin` - Path to CodexBar CLI
 - `source` - `oauth` (Codex and Claude)
 - `refresh_secs` - cache refresh interval (network calls)
@@ -112,6 +117,7 @@ tokengauge-tui
 ```
 
 Keys:
+
 - `r` refresh
 - `q` or `esc` quit
 
