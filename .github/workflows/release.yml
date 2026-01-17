@@ -46,7 +46,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tokengauge-x86_64
-          path: dist/tokengauge-${GITHUB_REF_NAME}-linux-x86_64.tar.gz
+          path: dist/tokengauge-*-linux-x86_64.tar.gz
           if-no-files-found: error
 
   build-aarch64:
@@ -85,7 +85,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tokengauge-aarch64
-          path: dist/tokengauge-${GITHUB_REF_NAME}-linux-aarch64.tar.gz
+          path: dist/tokengauge-*-linux-aarch64.tar.gz
           if-no-files-found: error
 
 
