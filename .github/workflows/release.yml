@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+  actions: read
+
 jobs:
   build-x86_64:
     runs-on: ubuntu-latest
@@ -16,6 +20,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-x86_64-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cross
         run: cargo install cross
@@ -35,6 +47,7 @@ jobs:
         with:
           name: tokengauge-x86_64
           path: dist/tokengauge-${GITHUB_REF_NAME}-linux-x86_64.tar.gz
+          if-no-files-found: error
 
   build-aarch64:
     runs-on: ubuntu-latest
@@ -46,6 +59,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-gnu
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-aarch64-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Install cross
         run: cargo install cross
@@ -65,6 +86,7 @@ jobs:
         with:
           name: tokengauge-aarch64
           path: dist/tokengauge-${GITHUB_REF_NAME}-linux-aarch64.tar.gz
+          if-no-files-found: error
 
 
   release:
@@ -78,20 +100,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: tokengauge-*
           merge-multiple: true
-
-      - name: Prepare release assets
-        run: |
-          mkdir -p dist
-          cp scripts/install.sh dist/install.sh
-          cp scripts/update.sh dist/update.sh
-          cp scripts/update-codexbar.sh dist/update-codexbar.sh
 
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*.tar.gz
-            dist/install.sh
-            dist/update.sh
-            dist/update-codexbar.sh
+          files: dist/*.tar.gz

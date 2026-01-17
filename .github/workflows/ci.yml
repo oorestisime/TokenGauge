@@ -15,6 +15,14 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-ci-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Build
         run: cargo build --workspace
 

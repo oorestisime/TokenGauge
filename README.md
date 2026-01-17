@@ -12,7 +12,7 @@ TokenGauge keeps Codex and Claude usage visible on Linux. It pairs a Waybar modu
 ## Quick install
 
 ```bash
-curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oorestisime/TokenGauge/main/scripts/install.sh | bash
 ```
 
 This downloads the latest release binaries, installs them to `~/.local/bin`, writes `~/.config/tokengauge/config.toml`, and patches your Waybar config (with a backup).
@@ -75,9 +75,9 @@ Keys:
 
 - Update TokenGauge binaries:
   ```bash
-  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/oorestisime/TokenGauge/main/scripts/update.sh | bash
   ```
 - Update CodexBar CLI:
   ```bash
-  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update-codexbar.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/oorestisime/TokenGauge/main/scripts/update-codexbar.sh | bash
   ```
