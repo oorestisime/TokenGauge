@@ -1,6 +1,13 @@
 # TokenGauge
 
-Waybar + TUI wrapper around CodexBar CLI usage.
+TokenGauge keeps Codex and Claude usage visible on Linux. It pairs a Waybar module with a fast TUI dashboard, backed by CodexBar CLI and a local cache.
+
+## Highlights
+
+- Compact Waybar status with cached usage
+- TUI dashboard with colored bars and reset times
+- OAuth source for Codex and Claude on Linux
+- Configurable refresh cadence to avoid extra API calls
 
 ## Quick install
 
@@ -9,6 +16,10 @@ curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/in
 ```
 
 This downloads the latest release binaries, installs them to `~/.local/bin`, writes `~/.config/tokengauge/config.toml`, and patches your Waybar config (with a backup).
+
+## Supported providers
+
+TokenGauge currently supports Codex and Claude via CodexBar CLI `oauth` on Linux. Other providers are not yet supported on Linux because CodexBar relies on web or API strategies.
 
 ## Binaries
 
@@ -24,17 +35,14 @@ mkdir -p ~/.config/tokengauge
 cp crates/tokengauge-core/config.example.toml ~/.config/tokengauge/config.toml
 ```
 
-TokenGauge currently supports **Codex** and **Claude** via CodexBar CLI `oauth` on Linux.
-Other providers are not yet supported on Linux because CodexBar relies on web/API strategies.
-
 Key fields:
 - `codexbar_bin` - Path to CodexBar CLI
-- `source` - `oauth` (Codex + Claude)
+- `source` - `oauth` (Codex and Claude)
 - `refresh_secs` - cache refresh interval (network calls)
 - `cache_file` - where the Waybar module writes JSON
 - `providers.codex` / `providers.claude` - enable or disable providers
 
-Note: Waybar's `interval` controls UI refresh. Keep it shorter than `refresh_secs` so the UI updates without extra API calls.
+Note: Waybar `interval` controls UI refresh. Keep it shorter than `refresh_secs` so the UI updates without extra API calls.
 
 ## Waybar module example
 
@@ -53,22 +61,23 @@ Restart Waybar:
 omarchy-restart-waybar
 ```
 
-## Updates
-
-Update tokengauge binaries:
-  ```bash
-  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update.sh | bash
-  ```
-
-Update CodexBar CLI:
-  ```bash
-  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update-codexbar.sh | bash
-  ```
-
 ## TUI
 
 ```bash
 tokengauge-tui
 ```
 
-Press `r` to refresh the view and `q` to quit.
+Keys:
+- `r` refresh
+- `q` or `esc` quit
+
+## Updates
+
+- Update TokenGauge binaries:
+  ```bash
+  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update.sh | bash
+  ```
+- Update CodexBar CLI:
+  ```bash
+  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update-codexbar.sh | bash
+  ```
