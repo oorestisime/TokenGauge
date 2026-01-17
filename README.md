@@ -15,7 +15,43 @@ TokenGauge keeps Codex and Claude usage visible on Linux. It pairs a Waybar modu
 curl -fsSL https://raw.githubusercontent.com/oorestisime/TokenGauge/main/scripts/install.sh | bash
 ```
 
-This downloads the latest release binaries, installs them to `~/.local/bin`, writes `~/.config/tokengauge/config.toml`, and patches your Waybar config (with a backup).
+This downloads the latest release binaries, installs them to `~/.local/bin`, writes `~/.config/tokengauge/config.toml`, and patches your Waybar config (with a backup). Requires `jq`.
+
+## Manual install
+
+1. Download the latest release tarball for your architecture from GitHub Releases.
+2. Extract and install the binaries:
+
+```bash
+tar -xzf tokengauge-<tag>-linux-<arch>.tar.gz
+install -m 0755 tokengauge-waybar ~/.local/bin/tokengauge-waybar
+install -m 0755 tokengauge-tui ~/.local/bin/tokengauge-tui
+```
+
+3. Create the config:
+
+```bash
+mkdir -p ~/.config/tokengauge
+cp crates/tokengauge-core/config.example.toml ~/.config/tokengauge/config.toml
+```
+
+4. Add the Waybar module (example below) to your `modules-right` and config block:
+
+```jsonc
+"modules-right": ["custom/tokengauge", "group/tray-expander", "bluetooth", "network", "pulseaudio", "cpu", "battery"],
+"custom/tokengauge": {
+  "exec": "tokengauge-waybar",
+  "return-type": "json",
+  "interval": 60,
+  "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+}
+```
+
+Restart Waybar:
+
+```bash
+omarchy-restart-waybar
+```
 
 ## Supported providers
 
@@ -42,7 +78,7 @@ Key fields:
 - `cache_file` - where the Waybar module writes JSON
 - `providers.codex` / `providers.claude` - enable or disable providers
 
-Note: Waybar `interval` controls UI refresh. Keep it shorter than `refresh_secs` so the UI updates without extra API calls.
+Note: Waybar `interval` controls UI refresh. Keep it shorter than `refresh_secs` so the UI updates without extra API calls. The installer patches your Waybar config with jq, so `config.jsonc` must be valid JSON (no comments).
 
 ## Waybar module example
 
@@ -52,6 +88,14 @@ Note: Waybar `interval` controls UI refresh. Keep it shorter than `refresh_secs`
   "return-type": "json",
   "interval": 60,
   "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+}
+```
+
+Optional spacing in `~/.config/waybar/style.css`:
+
+```css
+#custom-tokengauge {
+  margin-right: 10px;
 }
 ```
 

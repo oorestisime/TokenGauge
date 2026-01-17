@@ -9,6 +9,36 @@ WAYBAR_CONFIG="$HOME/.config/waybar/config.jsonc"
 BACKUP_PATH=""
 TMP_DIR=$(mktemp -d)
 
+if [[ -t 1 ]]; then
+  COLOR_RESET="\033[0m"
+  COLOR_GREEN="\033[0;32m"
+  COLOR_YELLOW="\033[0;33m"
+  COLOR_BLUE="\033[0;34m"
+  COLOR_RED="\033[0;31m"
+else
+  COLOR_RESET=""
+  COLOR_GREEN=""
+  COLOR_YELLOW=""
+  COLOR_BLUE=""
+  COLOR_RED=""
+fi
+
+info() {
+  printf '%b\n' "${COLOR_BLUE}$*${COLOR_RESET}"
+}
+
+success() {
+  printf '%b\n' "${COLOR_GREEN}$*${COLOR_RESET}"
+}
+
+warn() {
+  printf '%b\n' "${COLOR_YELLOW}$*${COLOR_RESET}"
+}
+
+fail() {
+  printf '%b\n' "${COLOR_RED}$*${COLOR_RESET}" >&2
+}
+
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -19,12 +49,13 @@ mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 get_latest_tag() {
   local repo="$1"
   local api_json
+  info "Fetching latest release for $repo"
   api_json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")
 
   if command -v jq >/dev/null 2>&1; then
     printf '%s' "$api_json" | jq -r '.tag_name // empty'
   else
-    echo "Missing jq for JSON parsing" >&2
+    fail "Missing jq for JSON parsing"
     return 1
   fi
 }
@@ -36,15 +67,16 @@ case "$arch" in
   *) echo "Unsupported arch: $arch" >&2; exit 1 ;;
 esac
 
-latest=$(get_latest_tag "$REPO")
+latest=$(get_latest_tag "$REPO" | tail -n 1)
 if [[ -z "$latest" ]]; then
-  echo "Failed to find latest release for $REPO" >&2
+  fail "Failed to find latest release for $REPO"
   exit 1
 fi
 
 asset="tokengauge-$latest-linux-$asset_arch.tar.gz"
 url="https://github.com/$REPO/releases/download/$latest/$asset"
 
+info "Downloading TokenGauge $latest"
 curl -fL "$url" -o "$TMP_DIR/$asset"
 
 tar -xzf "$TMP_DIR/$asset" -C "$TMP_DIR"
@@ -92,13 +124,13 @@ install_codexbar() {
     ln -sf "$INSTALL_DIR/CodexBarCLI" "$INSTALL_DIR/codexbar"
   fi
 
-  printf '%s\n' "Installed CodexBarCLI $codex_latest to $INSTALL_DIR"
+  success "Installed CodexBarCLI $codex_latest to $INSTALL_DIR"
 }
 
 if ! command -v codexbar >/dev/null 2>&1; then
-  echo "CodexBar CLI not found. Installing..."
+  warn "CodexBar CLI not found. Installing..."
   if ! install_codexbar; then
-    echo "Warning: failed to install CodexBar CLI. Install manually from https://github.com/steipete/CodexBar/releases" >&2
+    warn "Failed to install CodexBar CLI. Install manually from https://github.com/steipete/CodexBar/releases"
   fi
 fi
 
@@ -107,21 +139,44 @@ if [[ -f "$WAYBAR_CONFIG" ]]; then
   BACKUP_PATH="$backup"
   cp "$WAYBAR_CONFIG" "$backup"
   if ! grep -q 'custom/tokengauge' "$WAYBAR_CONFIG"; then
-    sed -i 's/"group\/tray-expander"/"custom\/tokengauge", "group\/tray-expander"/' "$WAYBAR_CONFIG"
-    cat <<'JSON' >> "$WAYBAR_CONFIG"
-
-"custom/tokengauge": {
-  "exec": "tokengauge-waybar",
-  "return-type": "json",
-  "interval": 60,
-  "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
-},
-JSON
+    tmp_config=$(mktemp)
+    if jq --indent 2 '
+      def ensure_array:
+        if . == null then []
+        elif type == "array" then .
+        else []
+        end;
+      def add_before($arr; $item; $before):
+        ($arr | index($item)) as $exists
+        | if $exists != null then $arr
+          else (
+            ($arr | index($before)) as $idx
+            | if $idx == null then ($arr + [$item])
+              else ($arr[:$idx] + [$item] + $arr[$idx:])
+              end
+          )
+          end;
+      ."custom/tokengauge" = {
+        "exec": "tokengauge-waybar",
+        "return-type": "json",
+        "interval": 60,
+        "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+      }
+      | ."modules-right" = (
+          ."modules-right" | ensure_array | add_before(.; "custom/tokengauge"; "group/tray-expander")
+        )
+    ' "$WAYBAR_CONFIG" > "$tmp_config"; then
+      mv "$tmp_config" "$WAYBAR_CONFIG"
+    else
+      rm -f "$tmp_config"
+      fail "Failed to patch Waybar config (invalid JSON)."
+      warn "Restore with: cp '$BACKUP_PATH' '$WAYBAR_CONFIG'"
+    fi
   fi
 fi
 
-echo "Installed tokengauge to $INSTALL_DIR. Restart Waybar: omarchy-restart-waybar"
 if [[ -n "$BACKUP_PATH" ]]; then
-  echo "Waybar backup saved at: $BACKUP_PATH"
-  echo "Restore with: cp '$BACKUP_PATH' '$WAYBAR_CONFIG'"
+  warn "Restore Waybar with: cp '$BACKUP_PATH' '$WAYBAR_CONFIG'"
 fi
+info "Installed tokengauge to $INSTALL_DIR"
+success "Restart Waybar: omarchy-restart-waybar"
