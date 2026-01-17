@@ -5,7 +5,7 @@ Waybar + TUI wrapper around CodexBar CLI usage.
 ## Quick install
 
 ```bash
-curl -fsSL https://github.com/oorestisime/tokengauge/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/install.sh | bash
 ```
 
 This downloads the latest release binaries, installs them to `~/.local/bin`, writes `~/.config/tokengauge/config.toml`, and patches your Waybar config (with a backup).
@@ -55,13 +55,14 @@ omarchy-restart-waybar
 
 ## Updates
 
-- Update tokengauge binaries:
+Update tokengauge binaries:
   ```bash
-  curl -fsSL https://github.com/oorestisime/tokengauge/releases/latest/download/update.sh | bash
+  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update.sh | bash
   ```
-- Update CodexBar CLI:
+
+Update CodexBar CLI:
   ```bash
-  curl -fsSL https://github.com/oorestisime/tokengauge/releases/latest/download/update-codexbar.sh | bash
+  curl -fsSL https://github.com/oorestisime/TokenGauge/releases/latest/download/update-codexbar.sh | bash
   ```
 
 ## TUI

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="${TOKENGAUGE_REPO:-oorestisime/tokengauge}"
+REPO="${TOKENGAUGE_REPO:-oorestisime/TokenGauge}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 TMP_DIR=$(mktemp -d)
 
