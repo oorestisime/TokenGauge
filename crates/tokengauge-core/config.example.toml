@@ -10,3 +10,6 @@ cache_file = "/tmp/tokengauge-usage.json"
 codex = true
 claude = true
 
+[waybar]
+window = "daily" # daily | weekly
+

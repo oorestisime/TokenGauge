@@ -18,6 +18,7 @@ pub struct UsageSnapshot {
 pub struct UsageWindow {
     pub used_percent: Option<u8>,
     pub reset_description: Option<String>,
+    pub window_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -44,6 +45,7 @@ pub struct TokenGaugeConfig {
     pub refresh_secs: u64,
     pub cache_file: PathBuf,
     pub providers: ProviderConfig,
+    pub waybar: WaybarConfig,
 }
 
 impl Default for TokenGaugeConfig {
@@ -54,6 +56,7 @@ impl Default for TokenGaugeConfig {
             refresh_secs: 600,
             cache_file: PathBuf::from("/tmp/tokengauge-usage.json"),
             providers: ProviderConfig::default(),
+            waybar: WaybarConfig::default(),
         }
     }
 }
@@ -63,6 +66,28 @@ impl Default for TokenGaugeConfig {
 pub struct ProviderConfig {
     pub codex: bool,
     pub claude: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WaybarConfig {
+    pub window: WaybarWindow,
+}
+
+impl Default for WaybarConfig {
+    fn default() -> Self {
+        Self {
+            window: WaybarWindow::Daily,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WaybarWindow {
+    #[default]
+    Daily,
+    Weekly,
 }
 
 impl Default for ProviderConfig {
@@ -101,8 +126,10 @@ pub fn provider_argument(config: &ProviderConfig) -> Option<&'static str> {
 pub struct ProviderRow {
     pub provider: String,
     pub session_used: Option<u8>,
+    pub session_window_minutes: Option<u32>,
     pub session_reset: String,
     pub weekly_used: Option<u8>,
+    pub weekly_window_minutes: Option<u32>,
     pub weekly_reset: String,
     pub credits: String,
     pub source: String,
@@ -175,13 +202,14 @@ pub fn provider_label(value: &str) -> &str {
     }
 }
 
-pub fn format_window(window: Option<UsageWindow>) -> (Option<u8>, String) {
+pub fn format_window(window: Option<UsageWindow>) -> (Option<u8>, Option<u32>, String) {
     if let Some(window) = window {
         let used = window.used_percent.map(|used| used.min(100));
+        let minutes = window.window_minutes;
         let reset = window.reset_description.unwrap_or_else(|| "—".to_string());
-        (used, reset)
+        (used, minutes, reset)
     } else {
-        (None, "—".into())
+        (None, None, "—".into())
     }
 }
 
@@ -212,25 +240,63 @@ pub fn payload_to_rows(
         .collect()
 }
 
+pub struct WeightedAverage {
+    pub used_percent: Option<u8>,
+    pub window_minutes: u32,
+}
+
+pub fn weighted_average(windows: Vec<(Option<u8>, Option<u32>)>) -> Option<u8> {
+    let mut total_minutes = 0u64;
+    let mut total_weighted = 0u64;
+
+    for (used, minutes) in windows {
+        let used = match used {
+            Some(value) => value as u64,
+            None => continue,
+        };
+        let minutes = match minutes {
+            Some(value) if value > 0 => value as u64,
+            _ => continue,
+        };
+        total_minutes += minutes;
+        total_weighted += used * minutes;
+    }
+
+    if total_minutes == 0 {
+        return None;
+    }
+
+    Some(((total_weighted as f64 / total_minutes as f64).round() as u8).min(100))
+}
+
 fn provider_to_row(payload: ProviderPayload) -> ProviderRow {
     let usage = payload.usage;
-    let (session_used, session_reset, weekly_used, weekly_reset, updated) =
-        if let Some(usage) = usage {
-            let primary = usage.primary;
-            let secondary = usage.secondary;
-            let updated = format_updated(usage.updated_at);
-            let (session_used, session_reset) = format_window(primary);
-            let (weekly_used, weekly_reset) = format_window(secondary);
-            (
-                session_used,
-                session_reset,
-                weekly_used,
-                weekly_reset,
-                updated,
-            )
-        } else {
-            (None, "—".into(), None, "—".into(), "—".into())
-        };
+    let (
+        session_used,
+        session_window,
+        session_reset,
+        weekly_used,
+        weekly_window,
+        weekly_reset,
+        updated,
+    ) = if let Some(usage) = usage {
+        let primary = usage.primary;
+        let secondary = usage.secondary;
+        let updated = format_updated(usage.updated_at);
+        let (session_used, session_window, session_reset) = format_window(primary);
+        let (weekly_used, weekly_window, weekly_reset) = format_window(secondary);
+        (
+            session_used,
+            session_window,
+            session_reset,
+            weekly_used,
+            weekly_window,
+            weekly_reset,
+            updated,
+        )
+    } else {
+        (None, None, "—".into(), None, None, "—".into(), "—".into())
+    };
 
     let credits = payload
         .credits
@@ -248,8 +314,10 @@ fn provider_to_row(payload: ProviderPayload) -> ProviderRow {
     ProviderRow {
         provider: provider_label(&payload.provider).to_string(),
         session_used,
+        session_window_minutes: session_window,
         session_reset,
         weekly_used,
+        weekly_window_minutes: weekly_window,
         weekly_reset,
         credits,
         source,

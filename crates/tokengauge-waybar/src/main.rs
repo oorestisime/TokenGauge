@@ -6,8 +6,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use serde::Serialize;
 use tokengauge_core::{
-    ProviderRow, TokenGaugeConfig, ensure_cache_dir, load_config, parse_payload_bytes,
-    payload_to_rows, read_cache, write_cache, write_default_config,
+    ProviderRow, TokenGaugeConfig, WaybarWindow, ensure_cache_dir, load_config,
+    parse_payload_bytes, payload_to_rows, read_cache, write_cache, write_default_config,
 };
 
 #[derive(Parser, Debug)]
@@ -22,6 +22,24 @@ struct WaybarOutput {
     text: String,
     tooltip: String,
     class: String,
+}
+
+fn format_bar(label: &str, value: Option<u8>) -> String {
+    let (bars, percent) = match value {
+        Some(percent) => (bar_blocks(percent), format!("{percent}%")),
+        None => ("—".to_string(), "—".to_string()),
+    };
+    format!("{label} {bars} {percent}")
+}
+
+fn bar_blocks(percent: u8) -> String {
+    match percent.min(100) {
+        0..=20 => "▁".to_string(),
+        21..=40 => "▁▂".to_string(),
+        41..=60 => "▁▂▃".to_string(),
+        61..=80 => "▁▂▃▅".to_string(),
+        _ => "▁▂▃▅▇".to_string(),
+    }
 }
 
 fn main() -> Result<()> {
@@ -63,11 +81,11 @@ fn main() -> Result<()> {
     let text = rows
         .iter()
         .map(|row| {
-            let used = row
-                .session_used
-                .map(|v| format!("{v}%"))
-                .unwrap_or_else(|| "—".into());
-            format!("{} {used}", row.provider)
+            let used = match config.waybar.window {
+                WaybarWindow::Daily => row.session_used,
+                WaybarWindow::Weekly => row.weekly_used,
+            };
+            format_bar(&row.provider, used)
         })
         .collect::<Vec<_>>()
         .join("  ");
@@ -128,10 +146,16 @@ fn fetch_payloads(config: &TokenGaugeConfig) -> Result<Vec<tokengauge_core::Prov
         .with_context(|| format!("failed to run {}", config.codexbar_bin))?;
 
     if !output.status.success() {
-        return Err(anyhow!(
-            "codexbar returned non-zero exit: {}",
-            output.status
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "no error output".to_string()
+        };
+        return Err(anyhow!("codexbar failed ({}) - {}", output.status, detail));
     }
 
     parse_payload_bytes(&output.stdout)

@@ -82,6 +82,7 @@ Key fields:
 - `refresh_secs` - cache refresh interval (network calls)
 - `cache_file` - where the Waybar module writes JSON
 - `providers.codex` / `providers.claude` - enable or disable providers
+- `waybar.window` - `daily` (session usage) or `weekly` (weekly usage)
 
 Note: Waybar `interval` controls UI refresh. Keep it shorter than `refresh_secs` so the UI updates without extra API calls. The installer patches your Waybar config with jq, so `config.jsonc` must be valid JSON (no comments).
 

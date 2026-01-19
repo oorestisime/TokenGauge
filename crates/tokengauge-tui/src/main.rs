@@ -224,10 +224,16 @@ fn refresh_cache(
         .with_context(|| format!("failed to run {}", config.codexbar_bin))?;
 
     if !output.status.success() {
-        return Err(anyhow!(
-            "codexbar returned non-zero exit: {}",
-            output.status
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "no error output".to_string()
+        };
+        return Err(anyhow!("codexbar failed ({}) - {}", output.status, detail));
     }
 
     let payloads = parse_payload_bytes(&output.stdout)?;

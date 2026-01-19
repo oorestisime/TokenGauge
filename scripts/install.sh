@@ -95,6 +95,9 @@ cache_file = "/tmp/tokengauge-usage.json"
 [providers]
 codex = true
 claude = true
+
+[waybar]
+mode = "list" # list | bars
 TOML
 fi
 
