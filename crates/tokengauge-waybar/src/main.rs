@@ -1,13 +1,13 @@
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result};
 use clap::Parser;
 use serde::Serialize;
 use tokengauge_core::{
-    ProviderRow, TokenGaugeConfig, WaybarWindow, ensure_cache_dir, load_config,
-    parse_payload_bytes, payload_to_rows, read_cache, write_cache, write_default_config,
+    FetchResult, ProviderPayload, ProviderRow, TokenGaugeConfig, WaybarWindow,
+    ensure_cache_dir, fetch_all_providers, load_config, payload_to_rows,
+    read_cache, write_cache_full, write_default_config,
 };
 
 #[derive(Parser, Debug)]
@@ -67,7 +67,7 @@ fn main() -> Result<()> {
         }
     };
 
-    let rows = payload_to_rows(payloads, &config);
+    let rows = payload_to_rows(payloads);
     if rows.is_empty() {
         let output = WaybarOutput {
             text: "—".into(),
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn maybe_refresh(config: &TokenGaugeConfig) -> Result<Vec<tokengauge_core::ProviderPayload>> {
+fn maybe_refresh(config: &TokenGaugeConfig) -> Result<Vec<ProviderPayload>> {
     let now = SystemTime::now();
     let stale = match std::fs::metadata(&config.cache_file) {
         Ok(metadata) => metadata
@@ -119,46 +119,13 @@ fn maybe_refresh(config: &TokenGaugeConfig) -> Result<Vec<tokengauge_core::Provi
     };
 
     if stale {
-        let payloads = fetch_payloads(config)?;
-        write_cache(&config.cache_file, &payloads)?;
+        let FetchResult { payloads, errors } = fetch_all_providers(config);
+        // Cache both payloads and errors
+        write_cache_full(&config.cache_file, &payloads, &errors)?;
         Ok(payloads)
     } else {
         read_cache(&config.cache_file)
     }
-}
-
-fn fetch_payloads(config: &TokenGaugeConfig) -> Result<Vec<tokengauge_core::ProviderPayload>> {
-    let mut command = Command::new(&config.codexbar_bin);
-    command
-        .arg("usage")
-        .arg("--format")
-        .arg("json")
-        .arg("--source")
-        .arg(&config.source);
-
-    let provider_arg = tokengauge_core::provider_argument(&config.providers);
-    if let Some(provider_arg) = provider_arg {
-        command.arg("--provider").arg(provider_arg);
-    }
-
-    let output = command
-        .output()
-        .with_context(|| format!("failed to run {}", config.codexbar_bin))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            "no error output".to_string()
-        };
-        return Err(anyhow!("codexbar failed ({}) - {}", output.status, detail));
-    }
-
-    parse_payload_bytes(&output.stdout)
 }
 
 fn format_tooltip(row: &ProviderRow) -> String {

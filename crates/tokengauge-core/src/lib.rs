@@ -1,9 +1,17 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
+
+// ============================================================================
+// Codexbar Payload Types
+// ============================================================================
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,43 +37,226 @@ pub struct Credits {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProviderError {
+    pub message: Option<String>,
+    pub code: Option<i32>,
+    pub kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ProviderPayload {
     pub provider: String,
     pub version: Option<String>,
     pub source: Option<String>,
     pub usage: Option<UsageSnapshot>,
     pub credits: Option<Credits>,
+    pub error: Option<ProviderError>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(default)]
-pub struct TokenGaugeConfig {
-    pub codexbar_bin: String,
-    pub source: String,
-    pub refresh_secs: u64,
-    pub cache_file: PathBuf,
-    pub providers: ProviderConfig,
-    pub waybar: WaybarConfig,
-}
-
-impl Default for TokenGaugeConfig {
-    fn default() -> Self {
-        Self {
-            codexbar_bin: "codexbar".to_string(),
-            source: "oauth".to_string(),
-            refresh_secs: 600,
-            cache_file: PathBuf::from("/tmp/tokengauge-usage.json"),
-            providers: ProviderConfig::default(),
-            waybar: WaybarConfig::default(),
-        }
+impl ProviderPayload {
+    /// Returns true if this payload represents an error (no usage data).
+    pub fn has_error(&self) -> bool {
+        self.error.is_some()
     }
 }
 
+// ============================================================================
+// Provider Registry
+// ============================================================================
+
+/// The type of authentication a provider uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderType {
+    /// OAuth-based providers (codex, claude) - use `--source oauth`
+    OAuth,
+    /// API key providers (zai, kimik2, etc.) - use `--source api` with env var
+    Api,
+}
+
+/// Information about a supported provider.
+#[derive(Debug, Clone)]
+pub struct ProviderInfo {
+    pub name: &'static str,
+    pub provider_type: ProviderType,
+    /// Environment variable name for API key (only for Api type)
+    pub env_var: Option<&'static str>,
+    pub label: &'static str,
+}
+
+/// Registry of all supported providers.
+pub const PROVIDERS: &[ProviderInfo] = &[
+    // OAuth providers
+    ProviderInfo {
+        name: "codex",
+        provider_type: ProviderType::OAuth,
+        env_var: None,
+        label: "Codex",
+    },
+    ProviderInfo {
+        name: "claude",
+        provider_type: ProviderType::OAuth,
+        env_var: None,
+        label: "Claude",
+    },
+    // API providers
+    ProviderInfo {
+        name: "zai",
+        provider_type: ProviderType::Api,
+        env_var: Some("ZAI_API_TOKEN"),
+        label: "z.ai",
+    },
+    ProviderInfo {
+        name: "kimik2",
+        provider_type: ProviderType::Api,
+        env_var: Some("KIMI_K2_API_KEY"),
+        label: "Kimi K2",
+    },
+    ProviderInfo {
+        name: "copilot",
+        provider_type: ProviderType::Api,
+        env_var: Some("COPILOT_API_TOKEN"),
+        label: "Copilot",
+    },
+    ProviderInfo {
+        name: "minimax",
+        provider_type: ProviderType::Api,
+        env_var: Some("MINIMAX_API_TOKEN"),
+        label: "MiniMax",
+    },
+    ProviderInfo {
+        name: "kimi",
+        provider_type: ProviderType::Api,
+        env_var: Some("KIMI_AUTH_TOKEN"),
+        label: "Kimi",
+    },
+];
+
+/// Get provider info by name.
+pub fn get_provider_info(name: &str) -> Option<&'static ProviderInfo> {
+    PROVIDERS.iter().find(|p| p.name == name)
+}
+
+/// Get the display label for a provider.
+pub fn provider_label(name: &str) -> &str {
+    get_provider_info(name).map(|p| p.label).unwrap_or(name)
+}
+
+// ============================================================================
+// Configuration Types
+// ============================================================================
+
+/// Configuration for an API provider (requires api_key).
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ApiProviderConfig {
+    pub api_key: String,
+}
+
+/// Provider configuration section.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
-pub struct ProviderConfig {
-    pub codex: bool,
-    pub claude: bool,
+pub struct ProvidersConfig {
+    // OAuth providers - just true/false
+    pub codex: Option<bool>,
+    pub claude: Option<bool>,
+    // API providers - struct with api_key
+    pub zai: Option<ApiProviderConfig>,
+    pub kimik2: Option<ApiProviderConfig>,
+    pub copilot: Option<ApiProviderConfig>,
+    pub minimax: Option<ApiProviderConfig>,
+    pub kimi: Option<ApiProviderConfig>,
+}
+
+/// An enabled provider with its configuration.
+#[derive(Debug, Clone)]
+pub struct EnabledProvider {
+    pub name: String,
+    pub provider_type: ProviderType,
+    pub api_key: Option<String>,
+    pub env_var: Option<&'static str>,
+}
+
+impl ProvidersConfig {
+    /// Get list of all enabled providers with their configuration.
+    pub fn enabled_providers(&self) -> Vec<EnabledProvider> {
+        let mut enabled = Vec::new();
+
+        // OAuth providers
+        if self.codex.unwrap_or(false) {
+            enabled.push(EnabledProvider {
+                name: "codex".to_string(),
+                provider_type: ProviderType::OAuth,
+                api_key: None,
+                env_var: None,
+            });
+        }
+        if self.claude.unwrap_or(false) {
+            enabled.push(EnabledProvider {
+                name: "claude".to_string(),
+                provider_type: ProviderType::OAuth,
+                api_key: None,
+                env_var: None,
+            });
+        }
+
+        // API providers - enabled if api_key is present
+        if let Some(ref config) = self.zai {
+            enabled.push(EnabledProvider {
+                name: "zai".to_string(),
+                provider_type: ProviderType::Api,
+                api_key: Some(config.api_key.clone()),
+                env_var: Some("ZAI_API_TOKEN"),
+            });
+        }
+        if let Some(ref config) = self.kimik2 {
+            enabled.push(EnabledProvider {
+                name: "kimik2".to_string(),
+                provider_type: ProviderType::Api,
+                api_key: Some(config.api_key.clone()),
+                env_var: Some("KIMI_K2_API_KEY"),
+            });
+        }
+        if let Some(ref config) = self.copilot {
+            enabled.push(EnabledProvider {
+                name: "copilot".to_string(),
+                provider_type: ProviderType::Api,
+                api_key: Some(config.api_key.clone()),
+                env_var: Some("COPILOT_API_TOKEN"),
+            });
+        }
+        if let Some(ref config) = self.minimax {
+            enabled.push(EnabledProvider {
+                name: "minimax".to_string(),
+                provider_type: ProviderType::Api,
+                api_key: Some(config.api_key.clone()),
+                env_var: Some("MINIMAX_API_TOKEN"),
+            });
+        }
+        if let Some(ref config) = self.kimi {
+            enabled.push(EnabledProvider {
+                name: "kimi".to_string(),
+                provider_type: ProviderType::Api,
+                api_key: Some(config.api_key.clone()),
+                env_var: Some("KIMI_AUTH_TOKEN"),
+            });
+        }
+
+        enabled
+    }
+
+    /// Check if a provider is enabled (used for filtering payloads).
+    pub fn is_enabled(&self, provider: &str) -> bool {
+        match provider {
+            "codex" => self.codex.unwrap_or(false),
+            "claude" => self.claude.unwrap_or(false),
+            "zai" => self.zai.is_some(),
+            "kimik2" => self.kimik2.is_some(),
+            "copilot" => self.copilot.is_some(),
+            "minimax" => self.minimax.is_some(),
+            "kimi" => self.kimi.is_some(),
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -90,37 +281,190 @@ pub enum WaybarWindow {
     Weekly,
 }
 
-impl Default for ProviderConfig {
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct TokenGaugeConfig {
+    pub codexbar_bin: String,
+    pub refresh_secs: u64,
+    pub cache_file: PathBuf,
+    pub providers: ProvidersConfig,
+    pub waybar: WaybarConfig,
+}
+
+impl Default for TokenGaugeConfig {
     fn default() -> Self {
         Self {
-            codex: true,
-            claude: true,
+            codexbar_bin: "codexbar".to_string(),
+            refresh_secs: 600,
+            cache_file: PathBuf::from("/tmp/tokengauge-usage.json"),
+            providers: ProvidersConfig {
+                codex: Some(true),
+                claude: Some(true),
+                ..Default::default()
+            },
+            waybar: WaybarConfig::default(),
         }
     }
 }
 
-impl ProviderConfig {
-    pub fn is_enabled(&self, provider: &str) -> bool {
-        match provider {
-            "codex" => self.codex,
-            "claude" => self.claude,
-            _ => false,
+// ============================================================================
+// Fetch Results
+// ============================================================================
+
+/// Error from fetching a single provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderFetchError {
+    pub provider: String,
+    /// Short, cleaned-up error message for display
+    pub message: String,
+    /// Full raw error message for debugging
+    pub raw: String,
+}
+
+impl ProviderFetchError {
+    /// Create a new error with both cleaned and raw messages.
+    pub fn new(provider: String, raw_message: &str) -> Self {
+        Self {
+            provider,
+            message: clean_error_message(raw_message),
+            raw: raw_message.to_string(),
+        }
+    }
+}
+
+/// Clean up error messages to extract the meaningful part.
+/// Removes JSON log prefixes and extracts key error info.
+fn clean_error_message(raw: &str) -> String {
+    // If it's a codexbar failure with JSON in stderr, try to extract the actual error
+    if raw.contains("codexbar failed") {
+        // Try to find API error messages like "401: {\"error\":\"Unauthorized\"}"
+        if let Some(api_error) = extract_api_error(raw) {
+            return api_error;
+        }
+        // Try to find "No available fetch strategy" errors
+        if raw.contains("No available fetch strategy") {
+            return "No available fetch strategy".to_string();
+        }
+        // Try to extract message from JSON payload error
+        if let Some(msg) = extract_json_message(raw) {
+            return msg;
+        }
+        // Default: just say it failed
+        return "API request failed".to_string();
+    }
+
+    // If it's a timeout
+    if raw.contains("timeout") {
+        return "Request timed out".to_string();
+    }
+
+    // Clean up codexbar API error messages like "Kimi K2 API returned 401: {\"error\":..."
+    if raw.contains("API returned") || raw.contains("API error") {
+        if let Some(api_error) = extract_api_error(raw) {
+            return api_error;
+        }
+        // Extract just the status part
+        if let Some(status) = extract_http_status(raw) {
+            return format!("API error ({})", status);
         }
     }
 
-    pub fn enabled_count(&self) -> usize {
-        usize::from(self.codex) + usize::from(self.claude)
+    // If message is reasonably short, use it as-is
+    if raw.len() <= 60 {
+        return raw.to_string();
+    }
+
+    // Truncate long messages
+    format!("{}...", &raw[..57])
+}
+
+/// Try to extract API error like "Unauthorized" or "Invalid API key"
+fn extract_api_error(raw: &str) -> Option<String> {
+    // Look for patterns like: API returned 401: {"error":"Unauthorized"}
+    // Or: Kimi K2 API error: {"error":"Unauthorized"}
+    if let Some(idx) = raw.find("\"error\":\"") {
+        let start = idx + 9;
+        if let Some(end) = raw[start..].find('"') {
+            let error = &raw[start..start + end];
+            // Look for HTTP status code
+            if let Some(status) = extract_http_status(raw) {
+                return Some(format!("{} (HTTP {})", error, status));
+            }
+            return Some(error.to_string());
+        }
+    }
+    None
+}
+
+/// Extract HTTP status code from error message
+fn extract_http_status(raw: &str) -> Option<&str> {
+    // Look for patterns like "returned 401:" or "status: 401)"
+    for pattern in &["401", "403", "404", "500", "502", "503"] {
+        if raw.contains(pattern) {
+            return Some(pattern);
+        }
+    }
+    None
+}
+
+/// Try to extract "message" field from JSON in error
+fn extract_json_message(raw: &str) -> Option<String> {
+    // Look for "message":"..." pattern
+    if let Some(idx) = raw.find("\"message\":\"") {
+        let start = idx + 11;
+        if let Some(end) = raw[start..].find('"') {
+            let msg = &raw[start..start + end];
+            if !msg.is_empty() && msg.len() <= 80 {
+                return Some(msg.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Result of fetching all providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FetchResult {
+    pub payloads: Vec<ProviderPayload>,
+    pub errors: Vec<ProviderFetchError>,
+}
+
+/// Cached data format - stores both payloads and errors.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CachedData {
+    /// New format with payloads and errors
+    Full { payloads: Vec<ProviderPayload>, errors: Vec<ProviderFetchError> },
+    /// Legacy format - just an array of payloads (for backwards compatibility)
+    Legacy(Vec<ProviderPayload>),
+}
+
+impl CachedData {
+    pub fn payloads(&self) -> &[ProviderPayload] {
+        match self {
+            CachedData::Full { payloads, .. } => payloads,
+            CachedData::Legacy(payloads) => payloads,
+        }
+    }
+
+    pub fn errors(&self) -> &[ProviderFetchError] {
+        match self {
+            CachedData::Full { errors, .. } => errors,
+            CachedData::Legacy(_) => &[],
+        }
+    }
+
+    pub fn into_parts(self) -> (Vec<ProviderPayload>, Vec<ProviderFetchError>) {
+        match self {
+            CachedData::Full { payloads, errors } => (payloads, errors),
+            CachedData::Legacy(payloads) => (payloads, Vec::new()),
+        }
     }
 }
 
-pub fn provider_argument(config: &ProviderConfig) -> Option<&'static str> {
-    match (config.codex, config.claude) {
-        (true, true) => Some("both"),
-        (true, false) => Some("codex"),
-        (false, true) => Some("claude"),
-        (false, false) => None,
-    }
-}
+// ============================================================================
+// Provider Row (for display)
+// ============================================================================
 
 #[derive(Debug, Clone)]
 pub struct ProviderRow {
@@ -136,21 +480,21 @@ pub struct ProviderRow {
     pub updated: String,
 }
 
+// ============================================================================
+// Config Loading
+// ============================================================================
+
 pub fn load_config(path: Option<PathBuf>) -> Result<TokenGaugeConfig> {
-    let path = match path {
-        Some(path) => path,
-        None => default_config_path(),
-    };
+    let path = path.unwrap_or_else(default_config_path);
 
     let contents = fs::read_to_string(&path)
         .with_context(|| format!("failed to read config at {}", path.display()))?;
     let mut config: TokenGaugeConfig = toml::from_str(&contents)
         .with_context(|| format!("failed to parse config at {}", path.display()))?;
+
+    // Apply defaults for empty values
     if config.codexbar_bin.is_empty() {
         config.codexbar_bin = "codexbar".to_string();
-    }
-    if config.source.is_empty() {
-        config.source = "oauth".to_string();
     }
     if config.cache_file.as_os_str().is_empty() {
         config.cache_file = PathBuf::from("/tmp/tokengauge-usage.json");
@@ -158,6 +502,7 @@ pub fn load_config(path: Option<PathBuf>) -> Result<TokenGaugeConfig> {
     if config.refresh_secs == 0 {
         config.refresh_secs = 600;
     }
+
     Ok(config)
 }
 
@@ -172,6 +517,146 @@ pub fn default_config_path() -> PathBuf {
     config_dir.join("tokengauge").join("config.toml")
 }
 
+// ============================================================================
+// Fetching Logic
+// ============================================================================
+
+/// Fetch a single provider using codexbar.
+pub fn fetch_single_provider(
+    codexbar_bin: &str,
+    provider: &EnabledProvider,
+    timeout: Duration,
+) -> Result<Vec<ProviderPayload>> {
+    let source = match provider.provider_type {
+        ProviderType::OAuth => "oauth",
+        ProviderType::Api => "api",
+    };
+
+    let mut command = Command::new(codexbar_bin);
+    command
+        .arg("usage")
+        .arg("--provider")
+        .arg(&provider.name)
+        .arg("--source")
+        .arg(source)
+        .arg("--format")
+        .arg("json")
+        .arg("--json-only");
+
+    // Set API key environment variable if needed
+    if let (Some(api_key), Some(env_var)) = (&provider.api_key, provider.env_var) {
+        command.env(env_var, api_key);
+    }
+
+    // Run with timeout using a separate thread
+    let (tx, rx) = mpsc::channel();
+    let child = command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("failed to spawn codexbar for {}", provider.name))?;
+
+    let provider_name = provider.name.clone();
+    thread::spawn(move || {
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
+    });
+
+    let output = rx
+        .recv_timeout(timeout)
+        .map_err(|_| anyhow!("timeout after {:?}", timeout))?
+        .with_context(|| format!("failed to run codexbar for {}", provider_name))?;
+
+    if !output.status.success() {
+        // Try to parse JSON error from stdout first
+        if let Ok(payloads) = parse_payload_bytes(&output.stdout) {
+            // Codexbar returns non-zero but still outputs JSON with error info
+            return Ok(payloads);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "no error output".to_string()
+        };
+        return Err(anyhow!("codexbar failed ({}) - {}", output.status, detail));
+    }
+
+    parse_payload_bytes(&output.stdout)
+}
+
+/// Fetch all enabled providers in parallel.
+pub fn fetch_all_providers(config: &TokenGaugeConfig) -> FetchResult {
+    let enabled = config.providers.enabled_providers();
+    let timeout = Duration::from_secs(2);
+
+    if enabled.is_empty() {
+        return FetchResult {
+            payloads: Vec::new(),
+            errors: Vec::new(),
+        };
+    }
+
+    // Spawn threads for each provider
+    let handles: Vec<_> = enabled
+        .into_iter()
+        .map(|provider| {
+            let bin = config.codexbar_bin.clone();
+            let provider_name = provider.name.clone();
+            let handle = thread::spawn(move || {
+                let result = fetch_single_provider(&bin, &provider, timeout);
+                (provider_name, result)
+            });
+            handle
+        })
+        .collect();
+
+    // Collect results
+    let mut payloads = Vec::new();
+    let mut errors = Vec::new();
+
+    for handle in handles {
+        match handle.join() {
+            Ok((provider_name, Ok(provider_payloads))) => {
+                // Filter out payloads with errors and add successful ones
+                for payload in provider_payloads {
+                    if payload.has_error() {
+                        let msg = payload
+                            .error
+                            .as_ref()
+                            .and_then(|e| e.message.clone())
+                            .unwrap_or_else(|| "Unknown error".to_string());
+                        errors.push(ProviderFetchError::new(provider_name.clone(), &msg));
+                    } else {
+                        payloads.push(payload);
+                    }
+                }
+            }
+            Ok((provider_name, Err(e))) => {
+                errors.push(ProviderFetchError::new(provider_name, &e.to_string()));
+            }
+            Err(_) => {
+                // Thread panicked - shouldn't happen normally
+                errors.push(ProviderFetchError {
+                    provider: "unknown".to_string(),
+                    message: "thread panicked".to_string(),
+                    raw: "thread panicked".to_string(),
+                });
+            }
+        }
+    }
+
+    FetchResult { payloads, errors }
+}
+
+// ============================================================================
+// Payload Processing
+// ============================================================================
+
 pub fn parse_payload(value: serde_json::Value) -> Result<Vec<ProviderPayload>> {
     if value.is_array() {
         serde_json::from_value(value).context("failed to parse provider payload list")
@@ -182,24 +667,18 @@ pub fn parse_payload(value: serde_json::Value) -> Result<Vec<ProviderPayload>> {
     }
 }
 
-pub fn provider_label(value: &str) -> &str {
-    match value {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "kiro" => "Kiro",
-        "gemini" => "Gemini",
-        "copilot" => "Copilot",
-        "zai" => "z.ai",
-        "cursor" => "Cursor",
-        "factory" => "Factory",
-        "kimi" => "Kimi",
-        "kimik2" => "Kimi K2",
-        "vertexai" => "Vertex AI",
-        "antigravity" => "Antigravity",
-        "opencode" => "OpenCode",
-        "minimax" => "MiniMax",
-        other => other,
-    }
+pub fn parse_payload_bytes(bytes: &[u8]) -> Result<Vec<ProviderPayload>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).context("codexbar output was not JSON")?;
+    parse_payload(value)
+}
+
+pub fn payload_to_rows(payloads: Vec<ProviderPayload>) -> Vec<ProviderRow> {
+    payloads
+        .into_iter()
+        .filter(|payload| !payload.has_error())
+        .map(provider_to_row)
+        .collect()
 }
 
 pub fn format_window(window: Option<UsageWindow>) -> (Option<u8>, Option<u32>, String) {
@@ -227,46 +706,6 @@ pub fn format_updated(value: Option<String>) -> String {
         return short.to_string();
     }
     value
-}
-
-pub fn payload_to_rows(
-    payloads: Vec<ProviderPayload>,
-    config: &TokenGaugeConfig,
-) -> Vec<ProviderRow> {
-    payloads
-        .into_iter()
-        .filter(|payload| config.providers.is_enabled(&payload.provider))
-        .map(provider_to_row)
-        .collect()
-}
-
-pub struct WeightedAverage {
-    pub used_percent: Option<u8>,
-    pub window_minutes: u32,
-}
-
-pub fn weighted_average(windows: Vec<(Option<u8>, Option<u32>)>) -> Option<u8> {
-    let mut total_minutes = 0u64;
-    let mut total_weighted = 0u64;
-
-    for (used, minutes) in windows {
-        let used = match used {
-            Some(value) => value as u64,
-            None => continue,
-        };
-        let minutes = match minutes {
-            Some(value) if value > 0 => value as u64,
-            _ => continue,
-        };
-        total_minutes += minutes;
-        total_weighted += used * minutes;
-    }
-
-    if total_minutes == 0 {
-        return None;
-    }
-
-    Some(((total_weighted as f64 / total_minutes as f64).round() as u8).min(100))
 }
 
 fn provider_to_row(payload: ProviderPayload) -> ProviderRow {
@@ -325,29 +764,48 @@ fn provider_to_row(payload: ProviderPayload) -> ProviderRow {
     }
 }
 
-pub fn read_cache(path: &Path) -> Result<Vec<ProviderPayload>> {
+// ============================================================================
+// Cache Operations
+// ============================================================================
+
+/// Read cache, returning both payloads and errors.
+pub fn read_cache_full(path: &Path) -> Result<CachedData> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read cache file {}", path.display()))?;
-    let value: serde_json::Value =
+    let cached: CachedData =
         serde_json::from_str(&contents).context("cached JSON was invalid")?;
-    parse_payload(value)
+    Ok(cached)
 }
 
-pub fn write_cache(path: &Path, payloads: &[ProviderPayload]) -> Result<()> {
+/// Read cache, returning only successful payloads (for backwards compatibility).
+pub fn read_cache(path: &Path) -> Result<Vec<ProviderPayload>> {
+    let cached = read_cache_full(path)?;
+    Ok(cached.payloads().to_vec())
+}
+
+/// Write cache with both payloads and errors.
+pub fn write_cache_full(path: &Path, payloads: &[ProviderPayload], errors: &[ProviderFetchError]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
-    let contents = serde_json::to_string(payloads)?;
+    let data = CachedData::Full {
+        payloads: payloads.to_vec(),
+        errors: errors.to_vec(),
+    };
+    let contents = serde_json::to_string(&data)?;
     fs::write(path, contents)
         .with_context(|| format!("failed to write cache {}", path.display()))?;
     Ok(())
 }
 
-pub fn parse_payload_bytes(bytes: &[u8]) -> Result<Vec<ProviderPayload>> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).context("codexbar output was not JSON")?;
-    parse_payload(value)
+/// Write cache with only payloads (legacy, for backwards compatibility).
+pub fn write_cache(path: &Path, payloads: &[ProviderPayload]) -> Result<()> {
+    write_cache_full(path, payloads, &[])
 }
+
+// ============================================================================
+// Config File Operations
+// ============================================================================
 
 pub fn ensure_config_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -357,19 +815,53 @@ pub fn ensure_config_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn write_default_config(path: &Path) -> Result<()> {
-    ensure_config_dir(path)?;
-    let config = TokenGaugeConfig::default();
-    let contents = toml::to_string_pretty(&config)?;
-    fs::write(path, contents)
-        .with_context(|| format!("failed to write config {}", path.display()))?;
-    Ok(())
-}
-
 pub fn ensure_cache_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create cache directory {}", parent.display()))?;
     }
+    Ok(())
+}
+
+pub fn write_default_config(path: &Path) -> Result<()> {
+    ensure_config_dir(path)?;
+    let contents = r#"# TokenGauge Configuration
+
+# Path to codexbar binary
+codexbar_bin = "codexbar"
+
+# Refresh interval in seconds
+refresh_secs = 600
+
+# Cache file location
+cache_file = "/tmp/tokengauge-usage.json"
+
+[waybar]
+# Which window to show in waybar: "daily" or "weekly"
+window = "daily"
+
+[providers]
+# OAuth providers - set to true/false to enable/disable
+codex = true
+claude = true
+
+# API providers - uncomment and add your API key to enable
+# [providers.zai]
+# api_key = "your-zai-api-key"
+
+# [providers.kimik2]
+# api_key = "your-kimi-k2-api-key"
+
+# [providers.copilot]
+# api_key = "your-copilot-api-key"
+
+# [providers.minimax]
+# api_key = "your-minimax-api-key"
+
+# [providers.kimi]
+# api_key = "your-kimi-api-key"
+"#;
+    fs::write(path, contents)
+        .with_context(|| format!("failed to write config {}", path.display()))?;
     Ok(())
 }

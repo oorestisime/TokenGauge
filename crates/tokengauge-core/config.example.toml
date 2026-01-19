@@ -1,15 +1,36 @@
-# TokenGauge configuration
+# TokenGauge Configuration
 # Copy to ~/.config/tokengauge/config.toml
 
+# Path to codexbar binary
 codexbar_bin = "codexbar"
-source = "oauth"
+
+# Refresh interval in seconds
 refresh_secs = 600
+
+# Cache file location
 cache_file = "/tmp/tokengauge-usage.json"
 
+[waybar]
+# Which window to show in waybar: "daily" or "weekly"
+window = "daily"
+
 [providers]
+# OAuth providers - set to true/false to enable/disable
 codex = true
 claude = true
 
-[waybar]
-window = "daily" # daily | weekly
+# API providers - uncomment and add your API key to enable
+# [providers.zai]
+# api_key = "your-zai-api-key"
 
+# [providers.kimik2]
+# api_key = "your-kimi-k2-api-key"
+
+# [providers.copilot]
+# api_key = "your-copilot-api-key"
+
+# [providers.minimax]
+# api_key = "your-minimax-api-key"
+
+# [providers.kimi]
+# api_key = "your-kimi-api-key"

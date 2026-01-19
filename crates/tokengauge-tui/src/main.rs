@@ -1,12 +1,11 @@
 use std::fs;
 use std::io;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use clap::Parser;
 use crossterm::ExecutableCommand;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -19,7 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokengauge_core::{
-    ProviderRow, TokenGaugeConfig, load_config, parse_payload_bytes, payload_to_rows, read_cache,
+    FetchResult, ProviderFetchError, ProviderRow,
+    fetch_all_providers, load_config, payload_to_rows, read_cache_full, write_cache_full,
     write_default_config,
 };
 
@@ -35,22 +35,32 @@ struct Args {
 #[derive(Debug)]
 struct AppState {
     rows: Vec<ProviderRow>,
+    errors: Vec<ProviderFetchError>,
+    cache_file: PathBuf,
     last_refresh: Instant,
     last_error: Option<String>,
     status_message: Option<String>,
     spinner_index: usize,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
+impl AppState {
+    fn new(cache_file: PathBuf) -> Self {
         Self {
             rows: Vec::new(),
+            errors: Vec::new(),
+            cache_file,
             last_refresh: Instant::now(),
             last_error: None,
             status_message: None,
             spinner_index: 0,
         }
     }
+}
+
+/// Result of a refresh operation.
+struct RefreshResult {
+    rows: Vec<ProviderRow>,
+    errors: Vec<ProviderFetchError>,
 }
 
 fn main() -> Result<()> {
@@ -76,7 +86,15 @@ fn main() -> Result<()> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -> Result<()> {
-    let mut state = AppState::default();
+    // Load config to get cache file path
+    let config_path = args.config.clone().unwrap_or_else(tokengauge_core::default_config_path);
+    let cache_file = if config_path.exists() {
+        load_config(Some(config_path)).map(|c| c.cache_file).unwrap_or_else(|_| PathBuf::from("/tmp/tokengauge-usage.json"))
+    } else {
+        PathBuf::from("/tmp/tokengauge-usage.json")
+    };
+
+    let mut state = AppState::new(cache_file);
     let mut pending_refresh = Some(spawn_refresh(args, false));
     let mut last_cache_poll = Instant::now();
 
@@ -101,8 +119,10 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -
         if pending_refresh.is_none() && last_cache_poll.elapsed() >= Duration::from_secs(60) {
             last_cache_poll = Instant::now();
             if let Ok(config) = load_config(args.config.clone()) {
-                if let Ok(payloads) = read_cache(&config.cache_file) {
-                    state.rows = payload_to_rows(payloads, &config);
+                if let Ok(cached) = read_cache_full(&config.cache_file) {
+                    let (payloads, errors) = cached.into_parts();
+                    state.rows = payload_to_rows(payloads);
+                    state.errors = errors;
                     state.last_error = None;
                 }
             }
@@ -134,14 +154,16 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -
     Ok(())
 }
 
-fn apply_refresh_result(state: &mut AppState, result: Result<Vec<ProviderRow>>) {
+fn apply_refresh_result(state: &mut AppState, result: Result<RefreshResult>) {
     match result {
-        Ok(rows) => {
-            state.rows = rows;
+        Ok(refresh) => {
+            state.rows = refresh.rows;
+            state.errors = refresh.errors;
             state.last_error = None;
         }
         Err(error) => {
             state.rows.clear();
+            state.errors.clear();
             state.last_error = Some(error.to_string());
         }
     }
@@ -149,7 +171,7 @@ fn apply_refresh_result(state: &mut AppState, result: Result<Vec<ProviderRow>>) 
     state.status_message = None;
 }
 
-fn spawn_refresh(args: &Args, force: bool) -> Receiver<Result<Vec<ProviderRow>>> {
+fn spawn_refresh(args: &Args, force: bool) -> Receiver<Result<RefreshResult>> {
     let config_override = args.config.clone();
     let (sender, receiver) = mpsc::channel();
 
@@ -168,77 +190,39 @@ fn should_exit(key: KeyEvent) -> bool {
 fn fetch_rows_with_config(
     config_override: Option<PathBuf>,
     force: bool,
-) -> Result<Vec<ProviderRow>> {
+) -> Result<RefreshResult> {
     let config_path = config_override.unwrap_or_else(tokengauge_core::default_config_path);
     if !config_path.exists() {
         write_default_config(&config_path)?;
     }
 
     let config = load_config(Some(config_path))?;
-    let payloads = match read_cache(&config.cache_file) {
-        Ok(payloads) => payloads,
-        Err(_) => refresh_cache(&config, true)?,
+
+    // Try to read from cache first
+    let cached = read_cache_full(&config.cache_file).ok();
+
+    // Determine if we need to refresh
+    let stale = match fs::metadata(&config.cache_file) {
+        Ok(metadata) => metadata
+            .modified()
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .map(|age| age >= Duration::from_secs(config.refresh_secs))
+            .unwrap_or(true),
+        Err(_) => true,
     };
-    let payloads = if force {
-        refresh_cache(&config, true)?
+
+    let (payloads, errors) = if force || stale || cached.is_none() {
+        let FetchResult { payloads, errors } = fetch_all_providers(&config);
+        // Cache both payloads and errors
+        write_cache_full(&config.cache_file, &payloads, &errors).ok();
+        (payloads, errors)
     } else {
-        payloads
+        cached.unwrap().into_parts()
     };
-    Ok(payload_to_rows(payloads, &config))
-}
 
-fn refresh_cache(
-    config: &TokenGaugeConfig,
-    force: bool,
-) -> Result<Vec<tokengauge_core::ProviderPayload>> {
-    if !force {
-        let stale = match fs::metadata(&config.cache_file) {
-            Ok(metadata) => metadata
-                .modified()
-                .ok()
-                .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-                .map(|age| age >= Duration::from_secs(config.refresh_secs))
-                .unwrap_or(true),
-            Err(_) => true,
-        };
-        if !stale {
-            return read_cache(&config.cache_file);
-        }
-    }
-
-    let mut command = Command::new(&config.codexbar_bin);
-    command
-        .arg("usage")
-        .arg("--format")
-        .arg("json")
-        .arg("--source")
-        .arg(&config.source);
-
-    let provider_arg = tokengauge_core::provider_argument(&config.providers);
-    if let Some(provider_arg) = provider_arg {
-        command.arg("--provider").arg(provider_arg);
-    }
-
-    let output = command
-        .output()
-        .with_context(|| format!("failed to run {}", config.codexbar_bin))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            "no error output".to_string()
-        };
-        return Err(anyhow!("codexbar failed ({}) - {}", output.status, detail));
-    }
-
-    let payloads = parse_payload_bytes(&output.stdout)?;
-    tokengauge_core::write_cache(&config.cache_file, &payloads)?;
-    Ok(payloads)
+    let rows = payload_to_rows(payloads);
+    Ok(RefreshResult { rows, errors })
 }
 
 fn percent_color(percent_left: u8) -> Color {
@@ -274,12 +258,32 @@ fn bar_line(percent_used: Option<u8>) -> Line<'static> {
 
 fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
     let size = frame.area();
-    let layout = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(0),
-        Constraint::Length(3),
-    ])
-    .split(size);
+
+    // Calculate layout based on whether we have errors
+    let has_errors = !state.errors.is_empty();
+    let error_height = if has_errors {
+        // 1 line per error + 1 for hint + 2 for borders, max 8 lines
+        (state.errors.len() as u16 + 1 + 2).min(8)
+    } else {
+        0
+    };
+
+    let layout = if has_errors {
+        Layout::vertical([
+            Constraint::Length(3),           // Header
+            Constraint::Min(0),              // Usage table
+            Constraint::Length(error_height), // Errors section
+            Constraint::Length(3),           // Footer
+        ])
+        .split(size)
+    } else {
+        Layout::vertical([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Usage table
+            Constraint::Length(3), // Footer
+        ])
+        .split(size)
+    };
 
     let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     let spinner = spinner_frames[state.spinner_index % spinner_frames.len()];
@@ -303,7 +307,7 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
         .block(Block::default().borders(Borders::ALL).title("TokenGauge"));
     frame.render_widget(header, layout[0]);
 
-    if state.rows.is_empty() {
+    if state.rows.is_empty() && state.errors.is_empty() {
         let message = state
             .status_message
             .as_deref()
@@ -382,6 +386,44 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
         frame.render_widget(table, layout[1]);
     }
 
+    // Render errors section if there are errors
+    if has_errors {
+        let mut error_lines: Vec<Line> = state
+            .errors
+            .iter()
+            .map(|err| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{}: ", err.provider),
+                        Style::default()
+                            .fg(Color::Red)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        truncate_string(&err.message, 60),
+                        Style::default().fg(Color::LightRed),
+                    ),
+                ])
+            })
+            .collect();
+
+        // Add hint about where to find full error details
+        error_lines.push(Line::from(Span::styled(
+            format!("Full details: {}", state.cache_file.display()),
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let errors_widget = Paragraph::new(error_lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Errors")
+                    .border_style(Style::default().fg(Color::Red)),
+            );
+        frame.render_widget(errors_widget, layout[2]);
+    }
+
+    let footer_index = if has_errors { 3 } else { 2 };
     let status_text = state.status_message.as_deref().unwrap_or("Idle");
     let status_color = if state.status_message.is_some() {
         Color::Yellow
@@ -415,5 +457,13 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
     ]);
 
     let footer = Paragraph::new(footer_line).block(Block::default().borders(Borders::ALL));
-    frame.render_widget(footer, layout[2]);
+    frame.render_widget(footer, layout[footer_index]);
+}
+
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len - 1])
+    }
 }
