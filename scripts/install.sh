@@ -97,8 +97,14 @@ codex = true
 claude = true
 
 [waybar]
-mode = "list" # list | bars
+window = "daily" # daily | weekly
 TOML
+fi
+
+# Detect if omarchy is installed
+HAS_OMARCHY=false
+if command -v omarchy-launch-or-focus-tui >/dev/null 2>&1; then
+  HAS_OMARCHY=true
 fi
 
 install_codexbar() {
@@ -143,32 +149,53 @@ if [[ -f "$WAYBAR_CONFIG" ]]; then
   cp "$WAYBAR_CONFIG" "$backup"
   if ! grep -q 'custom/tokengauge' "$WAYBAR_CONFIG"; then
     tmp_config=$(mktemp)
-    if jq --indent 2 '
-      def ensure_array:
-        if . == null then []
-        elif type == "array" then .
-        else []
-        end;
-      def add_before($arr; $item; $before):
-        ($arr | index($item)) as $exists
-        | if $exists != null then $arr
-          else (
-            ($arr | index($before)) as $idx
-            | if $idx == null then ($arr + [$item])
-              else ($arr[:$idx] + [$item] + $arr[$idx:])
-              end
-          )
+    if $HAS_OMARCHY; then
+      # With omarchy: include on-click handler
+      jq_filter='
+        def ensure_array:
+          if . == null then []
+          elif type == "array" then .
+          else []
           end;
-      ."custom/tokengauge" = {
-        "exec": "tokengauge-waybar",
-        "return-type": "json",
-        "interval": 60,
-        "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
-      }
-      | ."modules-right" = (
-          ."modules-right" | ensure_array | add_before(.; "custom/tokengauge"; "group/tray-expander")
-        )
-    ' "$WAYBAR_CONFIG" > "$tmp_config"; then
+        def add_before($arr; $item; $before):
+          ($arr | index($item)) as $exists
+          | if $exists != null then $arr
+            else (
+              ($arr | index($before)) as $idx
+              | if $idx == null then ($arr + [$item])
+                else ($arr[:$idx] + [$item] + $arr[$idx:])
+                end
+            )
+            end;
+        ."custom/tokengauge" = {
+          "exec": "tokengauge-waybar",
+          "return-type": "json",
+          "interval": 60,
+          "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+        }
+        | ."modules-right" = (
+            ."modules-right" | ensure_array | add_before(.; "custom/tokengauge"; "group/tray-expander")
+          )
+      '
+    else
+      # Without omarchy: no on-click handler
+      jq_filter='
+        def ensure_array:
+          if . == null then []
+          elif type == "array" then .
+          else []
+          end;
+        ."custom/tokengauge" = {
+          "exec": "tokengauge-waybar",
+          "return-type": "json",
+          "interval": 60
+        }
+        | ."modules-right" = (
+            ."modules-right" | ensure_array | . + ["custom/tokengauge"]
+          )
+      '
+    fi
+    if jq --indent 2 "$jq_filter" "$WAYBAR_CONFIG" > "$tmp_config"; then
       mv "$tmp_config" "$WAYBAR_CONFIG"
     else
       rm -f "$tmp_config"
@@ -182,4 +209,13 @@ if [[ -n "$BACKUP_PATH" ]]; then
   warn "Restore Waybar with: cp '$BACKUP_PATH' '$WAYBAR_CONFIG'"
 fi
 info "Installed tokengauge to $INSTALL_DIR"
-success "Restart Waybar: omarchy-restart-waybar"
+
+if $HAS_OMARCHY; then
+  success "Restart Waybar: omarchy-restart-waybar"
+else
+  success "Restart Waybar to see the module."
+  echo ""
+  info "To open the TUI on click, add \"on-click\" to your Waybar config:"
+  echo "  ghostty -e tokengauge-tui"
+  echo "  alacritty -e tokengauge-tui"
+fi

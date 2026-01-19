@@ -79,4 +79,9 @@ install -m 0755 "$TMP_DIR/tokengauge-waybar" "$INSTALL_DIR/tokengauge-waybar"
 install -m 0755 "$TMP_DIR/tokengauge-tui" "$INSTALL_DIR/tokengauge-tui"
 
 success "Updated tokengauge to $latest in $INSTALL_DIR"
-info "Restart Waybar: omarchy-restart-waybar"
+
+if command -v omarchy-restart-waybar >/dev/null 2>&1; then
+  info "Restart Waybar: omarchy-restart-waybar"
+else
+  info "Restart Waybar to see the changes."
+fi

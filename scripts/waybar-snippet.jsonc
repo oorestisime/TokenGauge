@@ -2,5 +2,5 @@
   "exec": "tokengauge-waybar",
   "return-type": "json",
   "interval": 60,
-  "on-click": "omarchy-launch-or-focus-tui tokengauge-tui"
+  "on-click": "ghostty -e tokengauge-tui"
 }
