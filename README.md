@@ -2,7 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/oorestisime/TokenGauge)](https://github.com/oorestisime/TokenGauge/releases)
 
-Monitor Codex and Claude API usage from your Waybar. Built for [Omarchy](https://omarchy.com) and Hyprland on Linux.
+Monitor token usage from your Waybar. Powered by [CodexBar](https://github.com/steipete/CodexBar). Built for [Omarchy](https://omarchy.org) ([GitHub](https://github.com/basecamp/omarchy)) but works with any Waybar setup on Linux.
 
 | Waybar | TUI |
 |--------|-----|
@@ -10,11 +10,23 @@ Monitor Codex and Claude API usage from your Waybar. Built for [Omarchy](https:/
 
 ## Features
 
-- Per-provider usage bars in Waybar (Codex, Claude)
+- Per-provider usage bars in Waybar
 - TUI dashboard with colored progress bars and reset times
 - Show daily or weekly usage (configurable)
 - Smart caching to minimize API calls
 - Click waybar module to open TUI
+
+## Supported Providers
+
+| Provider | Type | Config |
+|----------|------|--------|
+| Codex | OAuth | `codex = true` |
+| Claude | OAuth | `claude = true` |
+| Kimi K2 | API | `[providers.kimik2]` with `api_key` |
+| z.ai | API | `[providers.zai]` with `api_key` |
+| Copilot | API | `[providers.copilot]` with `api_key` |
+| MiniMax | API | `[providers.minimax]` with `api_key` |
+| Kimi | API | `[providers.kimi]` with `api_key` |
 
 ## Installation
 
@@ -32,11 +44,11 @@ Edit `~/.config/tokengauge/config.toml`:
 | Field | Description | Default |
 |-------|-------------|---------|
 | `codexbar_bin` | Path to CodexBar CLI | `codexbar` |
-| `source` | Authentication method | `oauth` |
 | `refresh_secs` | Cache refresh interval (seconds) | `600` |
 | `cache_file` | Cache file location | `/tmp/tokengauge-usage.json` |
-| `providers.codex` | Enable Codex | `true` |
-| `providers.claude` | Enable Claude | `true` |
+| `providers.codex` | Enable Codex (OAuth) | `true` |
+| `providers.claude` | Enable Claude (OAuth) | `true` |
+| `providers.<name>.api_key` | API key for API providers | — |
 | `waybar.window` | Show `daily` or `weekly` usage | `daily` |
 
 > **Note:** Waybar's `interval` controls how often the UI refreshes. Keep it shorter than `refresh_secs` so the UI updates from cache without extra API calls.
@@ -99,13 +111,16 @@ Other terminals: `alacritty -e tokengauge-tui`, `kitty -e tokengauge-tui`, `foot
    mkdir -p ~/.config/tokengauge
    cat > ~/.config/tokengauge/config.toml << 'EOF'
    codexbar_bin = "codexbar"
-   source = "oauth"
    refresh_secs = 600
    cache_file = "/tmp/tokengauge-usage.json"
 
    [providers]
    codex = true
    claude = true
+
+   # API providers (uncomment and add your API key)
+   # [providers.kimik2]
+   # api_key = "your-api-key"
 
    [waybar]
    window = "daily"
