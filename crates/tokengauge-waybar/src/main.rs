@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Result};
+use anyhow::Result;
 use clap::Parser;
 use serde::Serialize;
 use tokengauge_core::{
-    FetchResult, ProviderPayload, ProviderRow, TokenGaugeConfig, WaybarWindow,
-    ensure_cache_dir, fetch_all_providers, load_config, payload_to_rows,
-    read_cache, write_cache_full, write_default_config,
+    FetchResult, ProviderPayload, ProviderRow, TokenGaugeConfig, WaybarWindow, ensure_cache_dir,
+    fetch_all_providers, load_config, payload_to_rows, read_cache, write_cache_full,
+    write_default_config,
 };
 
 #[derive(Parser, Debug)]
@@ -141,4 +141,109 @@ fn format_tooltip(row: &ProviderRow) -> String {
         "{}: {} (resets {}) | {} (resets {})",
         row.provider, session, row.session_reset, weekly, row.weekly_reset
     )
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------------
+    // bar_blocks tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn bar_blocks_boundaries() {
+        // 0-20%
+        assert_eq!(bar_blocks(0), "▁");
+        assert_eq!(bar_blocks(20), "▁");
+
+        // 21-40%
+        assert_eq!(bar_blocks(21), "▁▂");
+        assert_eq!(bar_blocks(40), "▁▂");
+
+        // 41-60%
+        assert_eq!(bar_blocks(41), "▁▂▃");
+        assert_eq!(bar_blocks(60), "▁▂▃");
+
+        // 61-80%
+        assert_eq!(bar_blocks(61), "▁▂▃▅");
+        assert_eq!(bar_blocks(80), "▁▂▃▅");
+
+        // 81-100%
+        assert_eq!(bar_blocks(81), "▁▂▃▅▇");
+        assert_eq!(bar_blocks(100), "▁▂▃▅▇");
+    }
+
+    #[test]
+    fn bar_blocks_clamps_over_100() {
+        assert_eq!(bar_blocks(150), "▁▂▃▅▇");
+    }
+
+    // ------------------------------------------------------------------------
+    // format_bar tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn format_bar_with_value() {
+        let result = format_bar("Claude", Some(42));
+        assert!(result.contains("Claude"));
+        assert!(result.contains("42%"));
+        assert!(result.contains("▁▂▃")); // 41-60% range
+    }
+
+    #[test]
+    fn format_bar_none() {
+        let result = format_bar("Codex", None);
+        assert_eq!(result, "Codex — —");
+    }
+
+    // ------------------------------------------------------------------------
+    // format_tooltip tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn format_tooltip_full_data() {
+        let row = ProviderRow {
+            provider: "Claude".to_string(),
+            session_used: Some(19),
+            session_window_minutes: Some(300),
+            session_reset: "Jan 20 at 12:59PM".to_string(),
+            weekly_used: Some(12),
+            weekly_window_minutes: Some(10080),
+            weekly_reset: "Jan 26 at 8:59AM".to_string(),
+            credits: "—".to_string(),
+            source: "2.1.12 (oauth)".to_string(),
+            updated: "07:37".to_string(),
+        };
+        let tooltip = format_tooltip(&row);
+        assert!(tooltip.contains("Claude"));
+        assert!(tooltip.contains("Session 19% used"));
+        assert!(tooltip.contains("Jan 20 at 12:59PM"));
+        assert!(tooltip.contains("Weekly 12% used"));
+        assert!(tooltip.contains("Jan 26 at 8:59AM"));
+    }
+
+    #[test]
+    fn format_tooltip_missing_data() {
+        let row = ProviderRow {
+            provider: "Codex".to_string(),
+            session_used: None,
+            session_window_minutes: None,
+            session_reset: "—".to_string(),
+            weekly_used: None,
+            weekly_window_minutes: None,
+            weekly_reset: "—".to_string(),
+            credits: "—".to_string(),
+            source: "—".to_string(),
+            updated: "—".to_string(),
+        };
+        let tooltip = format_tooltip(&row);
+        assert!(tooltip.contains("Codex"));
+        assert!(tooltip.contains("Session —"));
+        assert!(tooltip.contains("Weekly —"));
+    }
 }

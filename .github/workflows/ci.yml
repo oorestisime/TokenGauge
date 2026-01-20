@@ -26,6 +26,9 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
+      - name: Test
+        run: cargo test --workspace
+
       - name: Format check
         run: cargo fmt --all -- --check
 

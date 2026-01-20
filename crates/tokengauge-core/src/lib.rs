@@ -397,14 +397,12 @@ fn extract_api_error(raw: &str) -> Option<String> {
 }
 
 /// Extract HTTP status code from error message
-fn extract_http_status(raw: &str) -> Option<&str> {
+fn extract_http_status(raw: &str) -> Option<&'static str> {
     // Look for patterns like "returned 401:" or "status: 401)"
-    for pattern in &["401", "403", "404", "500", "502", "503"] {
-        if raw.contains(pattern) {
-            return Some(pattern);
-        }
-    }
-    None
+    ["401", "403", "404", "500", "502", "503"]
+        .iter()
+        .find(|&pattern| raw.contains(pattern))
+        .copied()
 }
 
 /// Try to extract "message" field from JSON in error
@@ -434,7 +432,10 @@ pub struct FetchResult {
 #[serde(untagged)]
 pub enum CachedData {
     /// New format with payloads and errors
-    Full { payloads: Vec<ProviderPayload>, errors: Vec<ProviderFetchError> },
+    Full {
+        payloads: Vec<ProviderPayload>,
+        errors: Vec<ProviderFetchError>,
+    },
     /// Legacy format - just an array of payloads (for backwards compatibility)
     Legacy(Vec<ProviderPayload>),
 }
@@ -607,11 +608,10 @@ pub fn fetch_all_providers(config: &TokenGaugeConfig) -> FetchResult {
         .map(|provider| {
             let bin = config.codexbar_bin.clone();
             let provider_name = provider.name.clone();
-            let handle = thread::spawn(move || {
+            thread::spawn(move || {
                 let result = fetch_single_provider(&bin, &provider, timeout);
                 (provider_name, result)
-            });
-            handle
+            })
         })
         .collect();
 
@@ -772,8 +772,7 @@ fn provider_to_row(payload: ProviderPayload) -> ProviderRow {
 pub fn read_cache_full(path: &Path) -> Result<CachedData> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read cache file {}", path.display()))?;
-    let cached: CachedData =
-        serde_json::from_str(&contents).context("cached JSON was invalid")?;
+    let cached: CachedData = serde_json::from_str(&contents).context("cached JSON was invalid")?;
     Ok(cached)
 }
 
@@ -784,7 +783,11 @@ pub fn read_cache(path: &Path) -> Result<Vec<ProviderPayload>> {
 }
 
 /// Write cache with both payloads and errors.
-pub fn write_cache_full(path: &Path, payloads: &[ProviderPayload], errors: &[ProviderFetchError]) -> Result<()> {
+pub fn write_cache_full(
+    path: &Path,
+    payloads: &[ProviderPayload],
+    errors: &[ProviderFetchError],
+) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).ok();
     }
@@ -864,4 +867,517 @@ claude = true
     fs::write(path, contents)
         .with_context(|| format!("failed to write config {}", path.display()))?;
     Ok(())
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------------
+    // format_window tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn format_window_with_full_data() {
+        let window = UsageWindow {
+            used_percent: Some(42),
+            reset_description: Some("Jan 20 at 12:59PM".to_string()),
+            window_minutes: Some(300),
+        };
+        let (used, minutes, reset) = format_window(Some(window));
+        assert_eq!(used, Some(42));
+        assert_eq!(minutes, Some(300));
+        assert_eq!(reset, "Jan 20 at 12:59PM");
+    }
+
+    #[test]
+    fn format_window_clamps_over_100() {
+        let window = UsageWindow {
+            used_percent: Some(150),
+            reset_description: None,
+            window_minutes: None,
+        };
+        let (used, _, _) = format_window(Some(window));
+        assert_eq!(used, Some(100)); // clamped to 100
+    }
+
+    #[test]
+    fn format_window_none() {
+        let (used, minutes, reset) = format_window(None);
+        assert_eq!(used, None);
+        assert_eq!(minutes, None);
+        assert_eq!(reset, "—");
+    }
+
+    #[test]
+    fn format_window_missing_reset_description() {
+        let window = UsageWindow {
+            used_percent: Some(50),
+            reset_description: None,
+            window_minutes: Some(60),
+        };
+        let (_, _, reset) = format_window(Some(window));
+        assert_eq!(reset, "—");
+    }
+
+    // ------------------------------------------------------------------------
+    // format_updated tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn format_updated_rfc3339() {
+        // Full RFC3339 timestamp should be formatted to local time HH:MM
+        let result = format_updated(Some("2026-01-20T07:37:16Z".to_string()));
+        // We can't assert exact time due to timezone, but it should be HH:MM format
+        assert!(result.len() == 5 || result.len() <= 8); // "HH:MM" or with timezone offset
+        assert!(result.contains(':'));
+    }
+
+    #[test]
+    fn format_updated_iso_with_t() {
+        // ISO format with T separator, extracts time part
+        let result = format_updated(Some("2026-01-20T14:30:00Z".to_string()));
+        assert!(result.contains(':'));
+    }
+
+    #[test]
+    fn format_updated_none() {
+        assert_eq!(format_updated(None), "—");
+    }
+
+    #[test]
+    fn format_updated_fallback() {
+        // Unknown format returns as-is
+        let result = format_updated(Some("unknown format".to_string()));
+        assert_eq!(result, "unknown format");
+    }
+
+    // ------------------------------------------------------------------------
+    // provider_label tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn provider_label_known_providers() {
+        assert_eq!(provider_label("claude"), "Claude");
+        assert_eq!(provider_label("codex"), "Codex");
+        assert_eq!(provider_label("zai"), "z.ai");
+        assert_eq!(provider_label("kimik2"), "Kimi K2");
+    }
+
+    #[test]
+    fn provider_label_unknown_returns_input() {
+        assert_eq!(provider_label("unknown_provider"), "unknown_provider");
+    }
+
+    // ------------------------------------------------------------------------
+    // get_provider_info tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn get_provider_info_oauth_provider() {
+        let info = get_provider_info("claude").unwrap();
+        assert_eq!(info.name, "claude");
+        assert_eq!(info.provider_type, ProviderType::OAuth);
+        assert!(info.env_var.is_none());
+    }
+
+    #[test]
+    fn get_provider_info_api_provider() {
+        let info = get_provider_info("zai").unwrap();
+        assert_eq!(info.name, "zai");
+        assert_eq!(info.provider_type, ProviderType::Api);
+        assert_eq!(info.env_var, Some("ZAI_API_TOKEN"));
+    }
+
+    #[test]
+    fn get_provider_info_unknown() {
+        assert!(get_provider_info("nonexistent").is_none());
+    }
+
+    // ------------------------------------------------------------------------
+    // ProvidersConfig tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn providers_config_enabled_oauth_only() {
+        let config = ProvidersConfig {
+            codex: Some(true),
+            claude: Some(true),
+            ..Default::default()
+        };
+        let enabled = config.enabled_providers();
+        assert_eq!(enabled.len(), 2);
+        assert!(enabled.iter().any(|p| p.name == "codex"));
+        assert!(enabled.iter().any(|p| p.name == "claude"));
+    }
+
+    #[test]
+    fn providers_config_enabled_with_api_provider() {
+        let config = ProvidersConfig {
+            claude: Some(true),
+            zai: Some(ApiProviderConfig {
+                api_key: "test-key".to_string(),
+            }),
+            ..Default::default()
+        };
+        let enabled = config.enabled_providers();
+        assert_eq!(enabled.len(), 2);
+
+        let zai = enabled.iter().find(|p| p.name == "zai").unwrap();
+        assert_eq!(zai.api_key, Some("test-key".to_string()));
+        assert_eq!(zai.env_var, Some("ZAI_API_TOKEN"));
+    }
+
+    #[test]
+    fn providers_config_disabled_oauth() {
+        let config = ProvidersConfig {
+            codex: Some(false),
+            claude: Some(true),
+            ..Default::default()
+        };
+        let enabled = config.enabled_providers();
+        assert_eq!(enabled.len(), 1);
+        assert_eq!(enabled[0].name, "claude");
+    }
+
+    #[test]
+    fn providers_config_none_means_disabled() {
+        let config = ProvidersConfig::default();
+        let enabled = config.enabled_providers();
+        assert!(enabled.is_empty());
+    }
+
+    #[test]
+    fn providers_config_is_enabled() {
+        let config = ProvidersConfig {
+            codex: Some(true),
+            claude: Some(false),
+            zai: Some(ApiProviderConfig {
+                api_key: "key".to_string(),
+            }),
+            ..Default::default()
+        };
+        assert!(config.is_enabled("codex"));
+        assert!(!config.is_enabled("claude"));
+        assert!(config.is_enabled("zai"));
+        assert!(!config.is_enabled("kimik2"));
+        assert!(!config.is_enabled("unknown"));
+    }
+
+    // ------------------------------------------------------------------------
+    // ProviderPayload tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn provider_payload_has_error_true() {
+        let payload = ProviderPayload {
+            provider: "test".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: Some(ProviderError {
+                message: Some("error".to_string()),
+                code: None,
+                kind: None,
+            }),
+        };
+        assert!(payload.has_error());
+    }
+
+    #[test]
+    fn provider_payload_has_error_false() {
+        let payload = ProviderPayload {
+            provider: "test".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        assert!(!payload.has_error());
+    }
+
+    // ------------------------------------------------------------------------
+    // CachedData tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn cached_data_full_format() {
+        let payload = ProviderPayload {
+            provider: "claude".to_string(),
+            version: Some("2.0".to_string()),
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let error = ProviderFetchError {
+            provider: "codex".to_string(),
+            message: "timeout".to_string(),
+            raw: "raw error".to_string(),
+        };
+        let cached = CachedData::Full {
+            payloads: vec![payload.clone()],
+            errors: vec![error.clone()],
+        };
+
+        assert_eq!(cached.payloads().len(), 1);
+        assert_eq!(cached.errors().len(), 1);
+
+        let (payloads, errors) = cached.into_parts();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(errors.len(), 1);
+    }
+
+    #[test]
+    fn cached_data_legacy_format() {
+        let payload = ProviderPayload {
+            provider: "claude".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let cached = CachedData::Legacy(vec![payload]);
+
+        assert_eq!(cached.payloads().len(), 1);
+        assert_eq!(cached.errors().len(), 0); // legacy has no errors
+
+        let (payloads, errors) = cached.into_parts();
+        assert_eq!(payloads.len(), 1);
+        assert!(errors.is_empty());
+    }
+
+    // ------------------------------------------------------------------------
+    // Error message cleaning tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn provider_fetch_error_timeout() {
+        let error = ProviderFetchError::new("codex".to_string(), "timeout after 2s");
+        assert_eq!(error.message, "Request timed out");
+        assert_eq!(error.raw, "timeout after 2s");
+    }
+
+    #[test]
+    fn provider_fetch_error_api_401() {
+        let raw = r#"codexbar failed (exit status: 1) - {"error":"Unauthorized"}"#;
+        let error = ProviderFetchError::new("kimik2".to_string(), raw);
+        assert!(error.message.contains("Unauthorized"));
+    }
+
+    #[test]
+    fn provider_fetch_error_no_fetch_strategy() {
+        let raw = "codexbar failed - No available fetch strategy for provider";
+        let error = ProviderFetchError::new("test".to_string(), raw);
+        assert_eq!(error.message, "No available fetch strategy");
+    }
+
+    #[test]
+    fn provider_fetch_error_short_message_unchanged() {
+        let error = ProviderFetchError::new("test".to_string(), "Short error");
+        assert_eq!(error.message, "Short error");
+    }
+
+    #[test]
+    fn provider_fetch_error_long_message_truncated() {
+        let long_msg = "a".repeat(100);
+        let error = ProviderFetchError::new("test".to_string(), &long_msg);
+        assert!(error.message.len() <= 60);
+        assert!(error.message.ends_with("..."));
+    }
+
+    // ------------------------------------------------------------------------
+    // JSON parsing tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn parse_payload_single_object() {
+        let json = r#"{"provider":"claude","version":"2.1.12","source":"oauth"}"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let payloads = parse_payload(value).unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].provider, "claude");
+    }
+
+    #[test]
+    fn parse_payload_array() {
+        let json = r#"[{"provider":"claude"},{"provider":"codex"}]"#;
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let payloads = parse_payload(value).unwrap();
+        assert_eq!(payloads.len(), 2);
+    }
+
+    #[test]
+    fn parse_payload_bytes_valid() {
+        let json = br#"{"provider":"claude","version":"2.1.12"}"#;
+        let payloads = parse_payload_bytes(json).unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].version, Some("2.1.12".to_string()));
+    }
+
+    #[test]
+    fn parse_payload_bytes_invalid_json() {
+        let json = b"not valid json";
+        let result = parse_payload_bytes(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_payload_with_full_usage() {
+        let json = r#"{
+            "provider": "claude",
+            "version": "2.1.12",
+            "source": "oauth",
+            "usage": {
+                "primary": {
+                    "usedPercent": 19,
+                    "resetDescription": "Jan 20 at 12:59PM",
+                    "windowMinutes": 300
+                },
+                "secondary": {
+                    "usedPercent": 12,
+                    "resetDescription": "Jan 26 at 8:59AM",
+                    "windowMinutes": 10080
+                },
+                "updatedAt": "2026-01-20T07:37:16Z"
+            },
+            "credits": null,
+            "error": null
+        }"#;
+        let payloads = parse_payload_bytes(json.as_bytes()).unwrap();
+        assert_eq!(payloads.len(), 1);
+
+        let payload = &payloads[0];
+        assert_eq!(payload.provider, "claude");
+        assert!(!payload.has_error());
+
+        let usage = payload.usage.as_ref().unwrap();
+        let primary = usage.primary.as_ref().unwrap();
+        assert_eq!(primary.used_percent, Some(19));
+        assert_eq!(primary.window_minutes, Some(300));
+    }
+
+    // ------------------------------------------------------------------------
+    // payload_to_rows tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn payload_to_rows_filters_errors() {
+        let good = ProviderPayload {
+            provider: "claude".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let bad = ProviderPayload {
+            provider: "codex".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: Some(ProviderError {
+                message: Some("error".to_string()),
+                code: None,
+                kind: None,
+            }),
+        };
+        let rows = payload_to_rows(vec![good, bad]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].provider, "Claude");
+    }
+
+    #[test]
+    fn payload_to_rows_formats_credits() {
+        let payload = ProviderPayload {
+            provider: "zai".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: Some(Credits {
+                remaining: Some(42.567),
+            }),
+            error: None,
+        };
+        let rows = payload_to_rows(vec![payload]);
+        assert_eq!(rows[0].credits, "42.57"); // 2 decimal places
+    }
+
+    #[test]
+    fn payload_to_rows_formats_source() {
+        // Both version and source
+        let payload1 = ProviderPayload {
+            provider: "claude".to_string(),
+            version: Some("2.1.12".to_string()),
+            source: Some("oauth".to_string()),
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let rows = payload_to_rows(vec![payload1]);
+        assert_eq!(rows[0].source, "2.1.12 (oauth)");
+
+        // Only version
+        let payload2 = ProviderPayload {
+            provider: "claude".to_string(),
+            version: Some("2.1.12".to_string()),
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let rows = payload_to_rows(vec![payload2]);
+        assert_eq!(rows[0].source, "2.1.12");
+
+        // Only source
+        let payload3 = ProviderPayload {
+            provider: "claude".to_string(),
+            version: None,
+            source: Some("oauth".to_string()),
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let rows = payload_to_rows(vec![payload3]);
+        assert_eq!(rows[0].source, "oauth");
+
+        // Neither
+        let payload4 = ProviderPayload {
+            provider: "claude".to_string(),
+            version: None,
+            source: None,
+            usage: None,
+            credits: None,
+            error: None,
+        };
+        let rows = payload_to_rows(vec![payload4]);
+        assert_eq!(rows[0].source, "—");
+    }
+
+    // ------------------------------------------------------------------------
+    // WaybarConfig tests
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn waybar_config_default() {
+        let config = WaybarConfig::default();
+        assert_eq!(config.window, WaybarWindow::Daily);
+    }
+
+    #[test]
+    fn tokengauge_config_default() {
+        let config = TokenGaugeConfig::default();
+        assert_eq!(config.codexbar_bin, "codexbar");
+        assert_eq!(config.refresh_secs, 600);
+        assert!(config.providers.codex.unwrap_or(false));
+        assert!(config.providers.claude.unwrap_or(false));
+    }
 }

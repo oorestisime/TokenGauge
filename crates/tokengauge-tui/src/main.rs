@@ -18,9 +18,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokengauge_core::{
-    FetchResult, ProviderFetchError, ProviderRow,
-    fetch_all_providers, load_config, payload_to_rows, read_cache_full, write_cache_full,
-    write_default_config,
+    FetchResult, ProviderFetchError, ProviderRow, fetch_all_providers, load_config,
+    payload_to_rows, read_cache_full, write_cache_full, write_default_config,
 };
 
 const BAR_WIDTH: usize = 10;
@@ -87,9 +86,14 @@ fn main() -> Result<()> {
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -> Result<()> {
     // Load config to get cache file path
-    let config_path = args.config.clone().unwrap_or_else(tokengauge_core::default_config_path);
+    let config_path = args
+        .config
+        .clone()
+        .unwrap_or_else(tokengauge_core::default_config_path);
     let cache_file = if config_path.exists() {
-        load_config(Some(config_path)).map(|c| c.cache_file).unwrap_or_else(|_| PathBuf::from("/tmp/tokengauge-usage.json"))
+        load_config(Some(config_path))
+            .map(|c| c.cache_file)
+            .unwrap_or_else(|_| PathBuf::from("/tmp/tokengauge-usage.json"))
     } else {
         PathBuf::from("/tmp/tokengauge-usage.json")
     };
@@ -118,13 +122,13 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -
 
         if pending_refresh.is_none() && last_cache_poll.elapsed() >= Duration::from_secs(60) {
             last_cache_poll = Instant::now();
-            if let Ok(config) = load_config(args.config.clone()) {
-                if let Ok(cached) = read_cache_full(&config.cache_file) {
-                    let (payloads, errors) = cached.into_parts();
-                    state.rows = payload_to_rows(payloads);
-                    state.errors = errors;
-                    state.last_error = None;
-                }
+            if let Ok(config) = load_config(args.config.clone())
+                && let Ok(cached) = read_cache_full(&config.cache_file)
+            {
+                let (payloads, errors) = cached.into_parts();
+                state.rows = payload_to_rows(payloads);
+                state.errors = errors;
+                state.last_error = None;
             }
         }
 
@@ -142,12 +146,11 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, args: &Args) -
             }
         }
 
-        if pending_refresh.is_none() {
-            if let Ok(config) = load_config(args.config.clone()) {
-                if state.last_refresh.elapsed() >= Duration::from_secs(config.refresh_secs) {
-                    pending_refresh = Some(spawn_refresh(args, false));
-                }
-            }
+        if pending_refresh.is_none()
+            && let Ok(config) = load_config(args.config.clone())
+            && state.last_refresh.elapsed() >= Duration::from_secs(config.refresh_secs)
+        {
+            pending_refresh = Some(spawn_refresh(args, false));
         }
     }
 
@@ -187,10 +190,7 @@ fn should_exit(key: KeyEvent) -> bool {
     matches!(key.code, KeyCode::Esc | KeyCode::Char('q'))
 }
 
-fn fetch_rows_with_config(
-    config_override: Option<PathBuf>,
-    force: bool,
-) -> Result<RefreshResult> {
+fn fetch_rows_with_config(config_override: Option<PathBuf>, force: bool) -> Result<RefreshResult> {
     let config_path = config_override.unwrap_or_else(tokengauge_core::default_config_path);
     if !config_path.exists() {
         write_default_config(&config_path)?;
@@ -212,13 +212,14 @@ fn fetch_rows_with_config(
         Err(_) => true,
     };
 
-    let (payloads, errors) = if force || stale || cached.is_none() {
-        let FetchResult { payloads, errors } = fetch_all_providers(&config);
-        // Cache both payloads and errors
-        write_cache_full(&config.cache_file, &payloads, &errors).ok();
-        (payloads, errors)
-    } else {
-        cached.unwrap().into_parts()
+    let (payloads, errors) = match cached {
+        Some(cached) if !force && !stale => cached.into_parts(),
+        _ => {
+            let FetchResult { payloads, errors } = fetch_all_providers(&config);
+            // Cache both payloads and errors
+            write_cache_full(&config.cache_file, &payloads, &errors).ok();
+            (payloads, errors)
+        }
     };
 
     let rows = payload_to_rows(payloads);
@@ -270,10 +271,10 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
 
     let layout = if has_errors {
         Layout::vertical([
-            Constraint::Length(3),           // Header
-            Constraint::Min(0),              // Usage table
+            Constraint::Length(3),            // Header
+            Constraint::Min(0),               // Usage table
             Constraint::Length(error_height), // Errors section
-            Constraint::Length(3),           // Footer
+            Constraint::Length(3),            // Footer
         ])
         .split(size)
     } else {
@@ -395,9 +396,7 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
                 Line::from(vec![
                     Span::styled(
                         format!("{}: ", err.provider),
-                        Style::default()
-                            .fg(Color::Red)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         truncate_string(&err.message, 60),
@@ -413,13 +412,12 @@ fn draw_ui(frame: &mut ratatui::Frame, state: &AppState, is_refreshing: bool) {
             Style::default().fg(Color::DarkGray),
         )));
 
-        let errors_widget = Paragraph::new(error_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Errors")
-                    .border_style(Style::default().fg(Color::Red)),
-            );
+        let errors_widget = Paragraph::new(error_lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Errors")
+                .border_style(Style::default().fg(Color::Red)),
+        );
         frame.render_widget(errors_widget, layout[2]);
     }
 
