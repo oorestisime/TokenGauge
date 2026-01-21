@@ -5,7 +5,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Local};
 use serde::{Deserialize, Serialize};
 
@@ -287,6 +287,8 @@ pub struct TokenGaugeConfig {
     pub codexbar_bin: String,
     pub refresh_secs: u64,
     pub cache_file: PathBuf,
+    /// Timeout in seconds for each provider request
+    pub timeout_secs: u64,
     pub providers: ProvidersConfig,
     pub waybar: WaybarConfig,
 }
@@ -297,6 +299,7 @@ impl Default for TokenGaugeConfig {
             codexbar_bin: "codexbar".to_string(),
             refresh_secs: 600,
             cache_file: PathBuf::from("/tmp/tokengauge-usage.json"),
+            timeout_secs: 2,
             providers: ProvidersConfig {
                 codex: Some(true),
                 claude: Some(true),
@@ -593,7 +596,7 @@ pub fn fetch_single_provider(
 /// Fetch all enabled providers in parallel.
 pub fn fetch_all_providers(config: &TokenGaugeConfig) -> FetchResult {
     let enabled = config.providers.enabled_providers();
-    let timeout = Duration::from_secs(2);
+    let timeout = Duration::from_secs(config.timeout_secs);
 
     if enabled.is_empty() {
         return FetchResult {

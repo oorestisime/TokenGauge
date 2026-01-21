@@ -7,6 +7,9 @@ codexbar_bin = "codexbar"
 # Refresh interval in seconds
 refresh_secs = 600
 
+# Timeout in seconds for each provider request
+timeout_secs = 2
+
 # Cache file location
 cache_file = "/tmp/tokengauge-usage.json"
 
