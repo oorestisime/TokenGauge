@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::{DateTime, Local};
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
 // ============================================================================
@@ -26,6 +26,7 @@ pub struct UsageSnapshot {
 pub struct UsageWindow {
     pub used_percent: Option<u8>,
     pub reset_description: Option<String>,
+    pub resets_at: Option<String>,
     pub window_minutes: Option<u32>,
 }
 
@@ -688,11 +689,37 @@ pub fn format_window(window: Option<UsageWindow>) -> (Option<u8>, Option<u32>, S
     if let Some(window) = window {
         let used = window.used_percent.map(|used| used.min(100));
         let minutes = window.window_minutes;
-        let reset = window.reset_description.unwrap_or_else(|| "—".to_string());
+        let reset = format_reset_time(window.resets_at.as_deref(), window.reset_description);
         (used, minutes, reset)
     } else {
         (None, None, "—".into())
     }
+}
+
+/// Format reset time as relative duration (e.g., "in 2h 30m") if possible,
+/// otherwise fall back to the description (e.g., "Jan 22 at 5:59PM").
+fn format_reset_time(resets_at: Option<&str>, description: Option<String>) -> String {
+    if let Some(resets_at) = resets_at {
+        if let Ok(reset_time) = DateTime::parse_from_rfc3339(resets_at) {
+            let now = Utc::now();
+            let reset_utc = reset_time.with_timezone(&Utc);
+            let duration = reset_utc.signed_duration_since(now);
+
+            if duration.num_seconds() > 0 {
+                let total_minutes = duration.num_minutes();
+                let hours = total_minutes / 60;
+                let mins = total_minutes % 60;
+
+                return if hours > 0 {
+                    format!("in {}h {}m", hours, mins)
+                } else {
+                    format!("in {}m", mins)
+                };
+            }
+        }
+    }
+    // Fall back to description if we can't compute relative time
+    description.unwrap_or_else(|| "—".to_string())
 }
 
 pub fn format_updated(value: Option<String>) -> String {
@@ -885,10 +912,33 @@ mod tests {
     // ------------------------------------------------------------------------
 
     #[test]
-    fn format_window_with_full_data() {
+    fn format_window_with_resets_at() {
+        // Use a time 2 hours and 30 minutes in the future
+        let future = Utc::now() + chrono::Duration::hours(2) + chrono::Duration::minutes(30);
         let window = UsageWindow {
             used_percent: Some(42),
             reset_description: Some("Jan 20 at 12:59PM".to_string()),
+            resets_at: Some(future.to_rfc3339()),
+            window_minutes: Some(300),
+        };
+        let (used, minutes, reset) = format_window(Some(window));
+        assert_eq!(used, Some(42));
+        assert_eq!(minutes, Some(300));
+        // Allow for slight timing variations (29-30m)
+        assert!(
+            reset.starts_with("in 2h 2") || reset.starts_with("in 2h 30"),
+            "unexpected reset: {}",
+            reset
+        );
+    }
+
+    #[test]
+    fn format_window_falls_back_to_description() {
+        // When resets_at is missing, fall back to description
+        let window = UsageWindow {
+            used_percent: Some(42),
+            reset_description: Some("Jan 20 at 12:59PM".to_string()),
+            resets_at: None,
             window_minutes: Some(300),
         };
         let (used, minutes, reset) = format_window(Some(window));
@@ -902,6 +952,7 @@ mod tests {
         let window = UsageWindow {
             used_percent: Some(150),
             reset_description: None,
+            resets_at: None,
             window_minutes: None,
         };
         let (used, _, _) = format_window(Some(window));
@@ -917,14 +968,34 @@ mod tests {
     }
 
     #[test]
-    fn format_window_missing_reset_description() {
+    fn format_window_missing_both_resets_at_and_description() {
         let window = UsageWindow {
             used_percent: Some(50),
             reset_description: None,
+            resets_at: None,
             window_minutes: Some(60),
         };
         let (_, _, reset) = format_window(Some(window));
         assert_eq!(reset, "—");
+    }
+
+    #[test]
+    fn format_window_minutes_only() {
+        // Use a time 45 minutes in the future
+        let future = Utc::now() + chrono::Duration::minutes(45);
+        let window = UsageWindow {
+            used_percent: Some(10),
+            reset_description: None,
+            resets_at: Some(future.to_rfc3339()),
+            window_minutes: Some(60),
+        };
+        let (_, _, reset) = format_window(Some(window));
+        // Allow for slight timing variations (44-45m)
+        assert!(
+            reset == "in 44m" || reset == "in 45m",
+            "unexpected reset: {}",
+            reset
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -1242,11 +1313,13 @@ mod tests {
                 "primary": {
                     "usedPercent": 19,
                     "resetDescription": "Jan 20 at 12:59PM",
+                    "resetsAt": "2026-01-20T12:59:00Z",
                     "windowMinutes": 300
                 },
                 "secondary": {
                     "usedPercent": 12,
                     "resetDescription": "Jan 26 at 8:59AM",
+                    "resetsAt": "2026-01-26T08:59:00Z",
                     "windowMinutes": 10080
                 },
                 "updatedAt": "2026-01-20T07:37:16Z"
